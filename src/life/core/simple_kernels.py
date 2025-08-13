@@ -233,9 +233,9 @@ void simple_unified_step(unsigned char* current, unsigned char* next,
     int cell_idx = (y * width + x) * 4;
     
     if (rule_type == 0) { // Binary B/S rules - 4 independent RGBA channels!
-        // Process each RGBA channel independently
+        // Process each RGBA channel independently as separate games
         for (int channel = 0; channel < 4; channel++) {
-            // Count alive neighbors for this channel
+            // Count alive neighbors for this specific channel
             int count = 0;
             for (int dy = -1; dy <= 1; dy++) {
                 for (int dx = -1; dx <= 1; dx++) {
@@ -243,17 +243,18 @@ void simple_unified_step(unsigned char* current, unsigned char* next,
                     int nx = (x + dx + width) % width;
                     int ny = (y + dy + height) % height;
                     int neighbor_idx = (ny * width + nx) * 4;
-                    if (current[neighbor_idx + channel] > 128) count++; // Threshold for alive
+                    if (current[neighbor_idx + channel] > 128) count++; // Only this channel
                 }
             }
             
-            // Apply rule to this channel
+            // Current cell alive state for this channel
             bool alive = current[cell_idx + channel] > 128;
             bool next_alive = false;
             
             switch(rule_id) {
-                case 0: // Conway's Life B3/S23
-                    next_alive = (count == 3) || (count == 2 && alive);
+                case 0: // Conway's Life B3456/S234567 (More survivable)
+                    next_alive = (!alive && (count == 3 || count == 4 || count == 5 || count == 6)) ||
+                                (alive && (count == 2 || count == 3 || count == 4 || count == 5 || count == 6 || count == 7));
                     break;
                 case 1: // HighLife B36/S23
                     next_alive = (count == 3 || count == 6) || (count == 2 && alive);
@@ -286,17 +287,43 @@ void simple_unified_step(unsigned char* current, unsigned char* next,
                 case 9: // Life Without Death B3/S012345678
                     next_alive = (!alive && count == 3) || alive;
                     break;
+                case 10: // Gradual Conway - cells gradually grow/shrink instead of binary alive/dead
+                    // Special handling for gradual Conway below
+                    break;
+                case 11: // Classic Conway B3/S23 (Original)
+                    next_alive = (count == 3) || (count == 2 && alive);
+                    break;
                 default:
                     next_alive = (count == 3) || (count == 2 && alive);
             }
             
-            // Set this channel's value - preserve original color intensity
-            if (next_alive) {
-                // Keep the original color value when alive
-                next[cell_idx + channel] = current[cell_idx + channel] > 0 ? current[cell_idx + channel] : 255;
+            // Apply result to this specific channel
+            if (rule_id == 10) { // Gradual Conway
+                int current_val = current[cell_idx + channel];
+                int new_val = current_val;
+                
+                if (count == 3) {
+                    // Birth/Growth condition - gain 10%
+                    new_val = current_val + (current_val * 10) / 100;
+                } else if (count == 2 && current_val > 128) {
+                    // Survival condition - stay the same
+                    new_val = current_val;
+                } else if (current_val > 0) {
+                    // Death/Decay condition - lose 10%
+                    new_val = current_val - (current_val * 10) / 100;
+                }
+                
+                // Clamp between 0 and 255
+                next[cell_idx + channel] = max(0, min(255, new_val));
             } else {
-                // Dead = 0
-                next[cell_idx + channel] = 0;
+                // Regular binary Conway logic for this channel
+                if (next_alive) {
+                    // Preserve original color when alive, default to 255 if was 0
+                    next[cell_idx + channel] = current[cell_idx + channel] > 0 ? current[cell_idx + channel] : 255;
+                } else {
+                    // Dead = 0
+                    next[cell_idx + channel] = 0;
+                }
             }
         }
         

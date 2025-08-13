@@ -23,6 +23,8 @@ class BinaryRule(IntEnum):
     LIVE_FREE_DIE = 7      # B2/S0
     RULE_2X2 = 8           # B36/S125
     LIFE_WITHOUT_DEATH = 9 # B3/S012345678
+    GRADUAL_CONWAY = 10    # Gradual Conway with 10% growth/decay
+    CLASSIC_CONWAY = 11    # Original Conway B3/S23
 
 
 class MultiStateRule(IntEnum):

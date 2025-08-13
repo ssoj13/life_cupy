@@ -24,7 +24,7 @@ class Config:
     DEFAULT_STEPS_PER_FRAME: int = 1
     
     # Drawing tools
-    DEFAULT_BRUSH_RADIUS: int = 5
+    DEFAULT_BRUSH_RADIUS: int = 10
     MAX_BRUSH_RADIUS: int = 100
     MIN_BRUSH_RADIUS: int = 1
     DEFAULT_NOISE_DENSITY: float = 0.3
