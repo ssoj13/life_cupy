@@ -3,7 +3,7 @@ import numpy as np
 import cupy as cp
 from PySide6.QtCore import Qt, QTimer, Signal, QPoint
 from PySide6.QtOpenGLWidgets import QOpenGLWidget
-from PySide6.QtGui import QMouseEvent, QWheelEvent
+from PySide6.QtGui import QMouseEvent, QWheelEvent, QColor
 from OpenGL.GL import *
 from typing import Optional
 
@@ -33,11 +33,12 @@ class LifeGLWidget(QOpenGLWidget):
         self.drawing = False
         self.erasing = False
         self.last_draw_pos: Optional[QPoint] = None
-        self.stroke_points = []  # Store stroke points for batch drawing
-        self.current_draw_value = None  # Value to draw with current stroke
+# Removed stroke recording - now immediate mode only
+        self.last_field_pos: Optional[tuple] = None  # Track last position for line segments
         self.brush_radius = Config.DEFAULT_BRUSH_RADIUS
         self.noise_density = Config.DEFAULT_NOISE_DENSITY
-        self.stroke_step_distance = 2.0  # Distance between resampled points
+        self.paint_color = QColor(255, 255, 255)  # Default white paint color
+# Always immediate mode now
         
         # Animation
         self.timer = QTimer()
@@ -129,9 +130,7 @@ class LifeGLWidget(QOpenGLWidget):
         glPopMatrix()
         glDisable(GL_TEXTURE_2D)
         
-        # Draw stroke overlay if currently drawing
-        if (self.drawing or self.erasing) and len(self.stroke_points) > 1:
-            self.draw_stroke_overlay()
+        # No more stroke overlay - removed completely
         
     def update_simulation(self):
         """Update simulation and trigger redraw."""
@@ -174,22 +173,12 @@ class LifeGLWidget(QOpenGLWidget):
         """
         if event.button() == Qt.LeftButton:
             self.drawing = True
-            self.stroke_points = []
-            # Determine draw value based on current rule type
-            if self.engine.rule_type == 2:  # Multichannel
-                import random
-                self.current_draw_value = (random.randint(150, 255),  # Mental health
-                                         random.randint(150, 255),   # Body health  
-                                         random.randint(150, 255),   # Social health
-                                         random.randint(100, 200))   # Money
-            else:  # Binary or multistate
-                self.current_draw_value = (255, 0, 0, 0)  # Standard alive cell
-            self.add_stroke_point(event.pos())
+            # Always immediate mode: draw immediately
+            self.draw_at_position_immediate(event.pos())
         elif event.button() == Qt.RightButton:
             self.erasing = True
-            self.stroke_points = []
-            self.current_draw_value = (0, 0, 0, 0)  # Erase value
-            self.add_stroke_point(event.pos())
+            # Always immediate mode: erase immediately
+            self.draw_at_position_immediate(event.pos())
         elif event.button() == Qt.MiddleButton:
             self.last_draw_pos = event.pos()
     
@@ -200,8 +189,8 @@ class LifeGLWidget(QOpenGLWidget):
             event: Mouse event
         """
         if self.drawing or self.erasing:
-            self.add_stroke_point(event.pos())
-            self.update()  # Update to show stroke overlay
+            # Always immediate mode: draw immediately
+            self.draw_at_position_immediate(event.pos())
         elif event.buttons() & Qt.MiddleButton and self.last_draw_pos:
             # Pan view
             delta = event.pos() - self.last_draw_pos
@@ -216,15 +205,11 @@ class LifeGLWidget(QOpenGLWidget):
         Args:
             event: Mouse event
         """
-        if self.drawing or self.erasing:
-            # Draw the complete stroke at once
-            self.draw_stroke()
-            
+        # No stroke drawing needed - always immediate mode
         self.drawing = False
         self.erasing = False
         self.last_draw_pos = None
-        self.stroke_points = []
-        self.current_draw_value = None
+        self.last_field_pos = None  # Reset line segment tracking
     
     def wheelEvent(self, event: QWheelEvent):
         """Handle mouse wheel events for zooming.
@@ -233,8 +218,24 @@ class LifeGLWidget(QOpenGLWidget):
             event: Wheel event
         """
         zoom_factor = 1.1 if event.angleDelta().y() > 0 else 0.9
+        
+        # Get mouse position in widget coordinates
+        mouse_x = event.position().x()
+        mouse_y = event.position().y()
+        
+        # Convert to field coordinates before zoom
+        field_x = (mouse_x - self.pan_x) / self.zoom
+        field_y = (mouse_y - self.pan_y) / self.zoom
+        
+        # Apply zoom
+        old_zoom = self.zoom
         self.zoom *= zoom_factor
         self.zoom = max(0.1, min(10.0, self.zoom))
+        
+        # Adjust pan to keep the mouse position fixed in field coordinates
+        self.pan_x = mouse_x - field_x * self.zoom
+        self.pan_y = mouse_y - field_y * self.zoom
+        
         self.update()
     
     def add_stroke_point(self, pos: QPoint):
@@ -295,14 +296,13 @@ class LifeGLWidget(QOpenGLWidget):
         return resampled
     
     def draw_stroke(self):
-        """Draw the complete stroke using GPU acceleration."""
+        """Draw the complete stroke using anti-aliased stroke chain."""
         if not self.stroke_points or self.current_draw_value is None:
             return
             
-        # Use GPU stroke drawing for better performance
-        self.engine.draw_stroke_gpu(
+        # Use anti-aliased stroke chain for premium quality
+        self.engine.draw_stroke_chain(
             self.stroke_points, 
-            self.stroke_step_distance, 
             self.brush_radius, 
             self.current_draw_value
         )
@@ -310,39 +310,6 @@ class LifeGLWidget(QOpenGLWidget):
         # Update display after drawing complete stroke
         self.update()
     
-    def draw_stroke_overlay(self):
-        """Draw temporary stroke overlay to show current drawing path."""
-        if len(self.stroke_points) < 2:
-            return
-            
-        # Set up overlay drawing
-        glPushMatrix()
-        glTranslatef(self.pan_x, self.pan_y, 0)
-        glScalef(self.zoom, self.zoom, 1)
-        
-        # Set stroke color based on drawing/erasing
-        if self.erasing:
-            glColor4f(1.0, 0.0, 0.0, 0.7)  # Red for erasing
-        else:
-            glColor4f(0.0, 1.0, 0.0, 0.7)  # Green for drawing
-            
-        # Draw stroke line
-        glLineWidth(max(1.0, self.brush_radius * self.zoom / 4))
-        glBegin(GL_LINE_STRIP)
-        for x, y in self.stroke_points:
-            glVertex2f(x, y)
-        glEnd()
-        
-        # Draw brush circles at key points for better visualization
-        glPointSize(max(2.0, self.brush_radius * self.zoom / 2))
-        glBegin(GL_POINTS)
-        for i, (x, y) in enumerate(self.stroke_points):
-            if i % 3 == 0:  # Every 3rd point to avoid clutter
-                glVertex2f(x, y)
-        glEnd()
-        
-        glPopMatrix()
-        glColor4f(1.0, 1.0, 1.0, 1.0)  # Reset color
     
     
     def add_noise(self):
@@ -356,8 +323,7 @@ class LifeGLWidget(QOpenGLWidget):
         Args:
             radius: New brush radius
         """
-        self.brush_radius = min(max(Config.MIN_BRUSH_RADIUS, radius), 
-                               Config.MAX_BRUSH_RADIUS)
+        self.brush_radius = min(max(1, radius), 100)  # Clamp to 1-100 range
     
     def set_noise_density(self, density: float):
         """Set noise density.
@@ -374,3 +340,68 @@ class LifeGLWidget(QOpenGLWidget):
             distance: Distance between points in field coordinates
         """
         self.stroke_step_distance = max(0.5, min(10.0, distance))
+    
+    def set_paint_color(self, color: QColor):
+        """Set the paint color for drawing.
+        
+        Args:
+            color: QColor for painting
+        """
+        self.paint_color = color
+    
+# Removed - always immediate mode now
+    
+    def draw_at_position_immediate(self, pos: QPoint):
+        """Draw immediately at mouse position using anti-aliased lines (real-time mode).
+        
+        Args:
+            pos: Mouse position in widget coordinates
+        """
+        # Convert widget coordinates to field coordinates
+        x = (pos.x() - self.pan_x) / self.zoom
+        y = (pos.y() - self.pan_y) / self.zoom
+        
+        # Get current draw value
+        if self.erasing:
+            value = (0, 0, 0, 0)
+        else:
+            if self.engine.rule_type == 2:  # Multichannel
+                r, g, b = self.paint_color.red(), self.paint_color.green(), self.paint_color.blue()
+                value = (r, g, b, 200)
+            else:  # Binary or multistate
+                value = (255, 0, 0, 0)
+        
+        # If we have a previous position, draw anti-aliased line segment
+        if self.last_field_pos is not None:
+            last_x, last_y = self.last_field_pos
+            self.engine.draw_line_segment(last_x, last_y, x, y, self.brush_radius, value)
+        else:
+            # First point - draw a small circle
+            self.engine.draw_circle_immediate(int(x), int(y), self.brush_radius // 2, value)
+        
+        # Store current position for next segment
+        self.last_field_pos = (x, y)
+        self.update()
+    
+    def reset_viewport(self):
+        """Reset viewport to original zoom and pan state (Home function)."""
+        # Calculate the optimal zoom to fit the field in the window
+        widget_width = self.width()
+        widget_height = self.height()
+        
+        if widget_width > 0 and widget_height > 0:
+            # Calculate zoom to fit field with some padding
+            zoom_x = widget_width / self.engine.width
+            zoom_y = widget_height / self.engine.height
+            self.zoom = min(zoom_x, zoom_y) * 0.9  # 90% to add some padding
+            
+            # Center the field in the viewport
+            self.pan_x = (widget_width - self.engine.width * self.zoom) / 2
+            self.pan_y = (widget_height - self.engine.height * self.zoom) / 2
+        else:
+            # Fallback values
+            self.zoom = 1.0
+            self.pan_x = 0
+            self.pan_y = 0
+            
+        self.update()

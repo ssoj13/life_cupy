@@ -25,7 +25,7 @@ class Config:
     
     # Drawing tools
     DEFAULT_BRUSH_RADIUS: int = 5
-    MAX_BRUSH_RADIUS: int = 50
+    MAX_BRUSH_RADIUS: int = 100
     MIN_BRUSH_RADIUS: int = 1
     DEFAULT_NOISE_DENSITY: float = 0.3
     

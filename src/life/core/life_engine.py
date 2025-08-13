@@ -132,17 +132,57 @@ class MultiChannelEngine:
                         self.buffers[self.current_buffer][py, px, 2] = value[2]
                         self.buffers[self.current_buffer][py, px, 3] = value[3]
     
-    def draw_stroke_gpu(self, stroke_points: list, step_distance: float, radius: int, 
-                       value: Tuple[int, int, int, int] = (255, 0, 0, 0)) -> None:
-        """Draw a stroke using GPU resampling and stamping.
+    def draw_line_segment(self, x1: float, y1: float, x2: float, y2: float, 
+                         thickness: float, value: Tuple[int, int, int, int] = (255, 0, 0, 0)) -> None:
+        """Draw an anti-aliased line segment using GPU.
+        
+        Args:
+            x1, y1: Start point coordinates
+            x2, y2: End point coordinates  
+            thickness: Line thickness in pixels
+            value: 4-channel values (ch1, ch2, ch3, ch4)
+        """
+        # Calculate bounding box for optimal thread allocation
+        radius = thickness * 0.5
+        min_x = max(0, int(min(x1, x2) - radius - 1))
+        max_x = min(self.width - 1, int(max(x1, x2) + radius + 1))
+        min_y = max(0, int(min(y1, y2) - radius - 1))
+        max_y = min(self.height - 1, int(max(y1, y2) + radius + 1))
+        
+        total_pixels = (max_x - min_x + 1) * (max_y - min_y + 1)
+        if total_pixels <= 0:
+            return
+            
+        # Launch anti-aliased line kernel
+        threads_per_block = min(256, total_pixels)
+        blocks = max(1, (total_pixels + threads_per_block - 1) // threads_per_block)
+        
+        self.kernels['draw_antialiased_line'](
+            (blocks,), (threads_per_block,),
+            (self.buffers[self.current_buffer].ravel(),  # field
+             cp.float32(x1),                             # x1
+             cp.float32(y1),                             # y1
+             cp.float32(x2),                             # x2
+             cp.float32(y2),                             # y2
+             cp.float32(thickness),                      # thickness
+             cp.uint8(value[0]),                         # ch1
+             cp.uint8(value[1]),                         # ch2
+             cp.uint8(value[2]),                         # ch3
+             cp.uint8(value[3]),                         # ch4
+             cp.int32(self.width),                       # width
+             cp.int32(self.height))                      # height
+        )
+    
+    def draw_stroke_chain(self, stroke_points: list, thickness: float,
+                         value: Tuple[int, int, int, int] = (255, 0, 0, 0)) -> None:
+        """Draw an entire stroke chain with anti-aliasing using GPU batch processing.
         
         Args:
             stroke_points: List of (x, y) tuples defining the stroke path
-            step_distance: Distance between resampled points
-            radius: Brush radius in cells
+            thickness: Line thickness in pixels
             value: 4-channel values (ch1, ch2, ch3, ch4)
         """
-        if not stroke_points:
+        if len(stroke_points) < 2:
             return
             
         # Convert stroke points to flat array format for GPU
@@ -153,26 +193,74 @@ class MultiChannelEngine:
         # Convert to CuPy array
         points_gpu = cp.array(points_array, dtype=cp.float32)
         
-        # Calculate total stroke length to determine number of threads needed
-        total_length = 0.0
-        for i in range(len(stroke_points) - 1):
-            dx = stroke_points[i+1][0] - stroke_points[i][0]
-            dy = stroke_points[i+1][1] - stroke_points[i][1]
-            total_length += (dx**2 + dy**2)**0.5
+        # Calculate overall bounding box
+        radius = thickness * 0.5
+        min_x = min(p[0] for p in stroke_points) - radius - 1
+        max_x = max(p[0] for p in stroke_points) + radius + 1
+        min_y = min(p[1] for p in stroke_points) - radius - 1
+        max_y = max(p[1] for p in stroke_points) + radius + 1
         
-        num_resampled = max(1, int(total_length / step_distance) + 1)
+        min_x = max(0, int(min_x))
+        max_x = min(self.width - 1, int(max_x))
+        min_y = max(0, int(min_y))
+        max_y = min(self.height - 1, int(max_y))
         
-        # Launch kernel
-        threads_per_block = min(256, num_resampled)
-        blocks = max(1, (num_resampled + threads_per_block - 1) // threads_per_block)
+        total_pixels = (max_x - min_x + 1) * (max_y - min_y + 1)
+        if total_pixels <= 0:
+            return
+            
+        # Launch stroke chain kernel
+        threads_per_block = min(256, total_pixels)
+        blocks = max(1, (total_pixels + threads_per_block - 1) // threads_per_block)
         
-        self.kernels['draw_resampled_stroke'](
+        self.kernels['draw_stroke_chain'](
             (blocks,), (threads_per_block,),
             (self.buffers[self.current_buffer].ravel(),  # field
-             points_gpu,                                  # raw_points
-             len(stroke_points),                         # num_raw_points
-             cp.float32(step_distance),                  # step_distance
-             cp.int32(radius),                           # brush_radius
+             points_gpu,                                  # points
+             len(stroke_points),                         # num_points
+             cp.float32(thickness),                      # thickness
+             cp.uint8(value[0]),                         # ch1
+             cp.uint8(value[1]),                         # ch2
+             cp.uint8(value[2]),                         # ch3
+             cp.uint8(value[3]),                         # ch4
+             cp.int32(self.width),                       # width
+             cp.int32(self.height))                      # height
+        )
+    
+    def draw_circle_immediate(self, x: int, y: int, radius: int, 
+                             value: Tuple[int, int, int, int] = (255, 0, 0, 0)) -> None:
+        """Draw a circle immediately using the fast GPU kernel.
+        
+        Args:
+            x: Center X coordinate
+            y: Center Y coordinate
+            radius: Circle radius in cells
+            value: 4-channel values (ch1, ch2, ch3, ch4)
+        """
+        if not (0 <= x < self.width and 0 <= y < self.height):
+            return
+            
+        # Calculate number of threads needed (bounding box area)
+        min_x = max(0, x - radius)
+        max_x = min(self.width - 1, x + radius)
+        min_y = max(0, y - radius)
+        max_y = min(self.height - 1, y + radius)
+        
+        total_pixels = (max_x - min_x + 1) * (max_y - min_y + 1)
+        
+        if total_pixels <= 0:
+            return
+            
+        # Launch immediate drawing kernel
+        threads_per_block = min(256, total_pixels)
+        blocks = max(1, (total_pixels + threads_per_block - 1) // threads_per_block)
+        
+        self.kernels['draw_immediate_circle'](
+            (blocks,), (threads_per_block,),
+            (self.buffers[self.current_buffer].ravel(),  # field
+             cp.int32(x),                                # center_x
+             cp.int32(y),                                # center_y
+             cp.int32(radius),                           # radius
              cp.uint8(value[0]),                         # ch1
              cp.uint8(value[1]),                         # ch2
              cp.uint8(value[2]),                         # ch3

@@ -1,9 +1,10 @@
 """Main application window for Game of Life."""
 from PySide6.QtWidgets import (QMainWindow, QToolBar, QWidget, QVBoxLayout, 
                               QHBoxLayout, QPushButton, QLabel, QSlider,
-                              QSpinBox, QGroupBox, QDockWidget, QStatusBar, QComboBox)
+                              QSpinBox, QGroupBox, QDockWidget, QStatusBar, QComboBox,
+                              QColorDialog, QFrame, QCheckBox)
 from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QAction, QKeySequence
+from PySide6.QtGui import QAction, QKeySequence, QColor
 
 from .gl_widget import LifeGLWidget
 from ..utils.config import Config
@@ -20,6 +21,10 @@ class MainWindow(QMainWindow):
         self.setWindowTitle(Config.WINDOW_TITLE)
         self.setGeometry(100, 100, Config.WINDOW_WIDTH, Config.WINDOW_HEIGHT)
         
+        # State - initialize first before creating UI
+        self.is_playing = False
+        self.current_paint_color = QColor(255, 255, 255)  # Default white
+        
         # Create central widget
         self.gl_widget = LifeGLWidget()
         self.setCentralWidget(self.gl_widget)
@@ -33,9 +38,6 @@ class MainWindow(QMainWindow):
         self.create_dock_widget()
         self.create_status_bar()
         self.setup_keyboard_shortcuts()
-        
-        # State
-        self.is_playing = False
         
     def create_toolbar(self):
         """Create main toolbar with simulation controls."""
@@ -102,17 +104,32 @@ class MainWindow(QMainWindow):
         
         toolbar.addSeparator()
         
-        # Clipboard buttons - separate save and load
-        toolbar.addWidget(QLabel("Save:"))
+        # Color picker for painting
+        toolbar.addWidget(QLabel("Color:"))
+        self.color_button = QPushButton()
+        self.color_button.setMaximumSize(30, 25)
+        self.color_button.clicked.connect(self.open_color_picker)
+        self.update_color_button()
+        toolbar.addWidget(self.color_button)
+        
+        toolbar.addSeparator()
+        
+        # Clipboard buttons - grouped save/load pairs
         for i in range(4):
+            # Add a small separator frame between groups
+            if i > 0:
+                separator = QFrame()
+                separator.setFrameStyle(QFrame.VLine | QFrame.Sunken)
+                separator.setMaximumWidth(2)
+                toolbar.addWidget(separator)
+            
+            # Save button
             save_action = QAction(f"S{i+1}", self)
             save_action.setToolTip(f"Save to slot {i+1}")
             save_action.triggered.connect(lambda checked, slot=i: self.save_to_clipboard(slot))
             toolbar.addAction(save_action)
-        
-        toolbar.addSeparator()
-        toolbar.addWidget(QLabel("Load:"))
-        for i in range(4):
+            
+            # Load button (right next to save)
             load_action = QAction(f"L{i+1}", self)
             load_action.setToolTip(f"Load from slot {i+1}")
             load_action.triggered.connect(lambda checked, slot=i: self.load_from_clipboard(slot))
@@ -134,12 +151,17 @@ class MainWindow(QMainWindow):
         # Brush radius
         radius_layout = QHBoxLayout()
         radius_layout.addWidget(QLabel("Radius:"))
-        self.radius_spinbox = QSpinBox()
-        self.radius_spinbox.setRange(Config.MIN_BRUSH_RADIUS, Config.MAX_BRUSH_RADIUS)
-        self.radius_spinbox.setValue(Config.DEFAULT_BRUSH_RADIUS)
-        self.radius_spinbox.valueChanged.connect(self.update_brush_radius)
-        radius_layout.addWidget(self.radius_spinbox)
+        self.radius_slider = QSlider(Qt.Horizontal)
+        self.radius_slider.setRange(1, 100)  # 1 to 100 pixels
+        self.radius_slider.setValue(Config.DEFAULT_BRUSH_RADIUS)
+        self.radius_slider.valueChanged.connect(self.update_brush_radius)
+        radius_layout.addWidget(self.radius_slider)
+        self.radius_label = QLabel(str(Config.DEFAULT_BRUSH_RADIUS))
+        self.radius_label.setMinimumWidth(30)
+        radius_layout.addWidget(self.radius_label)
         brush_layout.addLayout(radius_layout)
+        
+# Removed drawing mode checkbox - now always immediate mode
         
         brush_group.setLayout(brush_layout)
         layout.addWidget(brush_group)
@@ -218,6 +240,11 @@ class MainWindow(QMainWindow):
         inst_layout.addWidget(QLabel("• Middle Drag: Pan"))
         inst_layout.addWidget(QLabel("• Scroll: Zoom"))
         inst_layout.addWidget(QLabel("• Space: Play/Pause"))
+        inst_layout.addWidget(QLabel("• H/Home: Reset Viewport"))
+        inst_layout.addWidget(QLabel("• [/]: Brush Size ±10%"))
+        inst_layout.addWidget(QLabel("• ESC: Exit Application"))
+        inst_layout.addWidget(QLabel("• GPU anti-aliased drawing"))
+        inst_layout.addWidget(QLabel("• Color picker works in multichannel mode"))
         instructions.setLayout(inst_layout)
         layout.addWidget(instructions)
         
@@ -279,6 +306,36 @@ class MainWindow(QMainWindow):
         clear_action.triggered.connect(self.clear_field)
         self.addAction(clear_action)
         
+        # H for home (reset viewport)
+        home_action = QAction(self)
+        home_action.setShortcut(QKeySequence(Qt.Key_H))
+        home_action.triggered.connect(self.reset_viewport)
+        self.addAction(home_action)
+        
+        # Home key (right side of keyboard) for reset viewport
+        home_key_action = QAction(self)
+        home_key_action.setShortcut(QKeySequence(Qt.Key_Home))
+        home_key_action.triggered.connect(self.reset_viewport)
+        self.addAction(home_key_action)
+        
+        # [ key for smaller brush size
+        smaller_brush_action = QAction(self)
+        smaller_brush_action.setShortcut(QKeySequence(Qt.Key_BracketLeft))
+        smaller_brush_action.triggered.connect(self.decrease_brush_size)
+        self.addAction(smaller_brush_action)
+        
+        # ] key for larger brush size
+        larger_brush_action = QAction(self)
+        larger_brush_action.setShortcut(QKeySequence(Qt.Key_BracketRight))
+        larger_brush_action.triggered.connect(self.increase_brush_size)
+        self.addAction(larger_brush_action)
+        
+        # ESC key to exit application
+        exit_action = QAction(self)
+        exit_action.setShortcut(QKeySequence(Qt.Key_Escape))
+        exit_action.triggered.connect(self.close)
+        self.addAction(exit_action)
+        
     def toggle_simulation(self):
         """Toggle simulation play/pause."""
         if self.is_playing:
@@ -337,6 +394,9 @@ class MainWindow(QMainWindow):
             value: New brush radius
         """
         self.gl_widget.set_brush_radius(value)
+        self.radius_label.setText(str(value))
+    
+# Removed toggle method - now always immediate mode
         
     def update_noise_density(self, value: int):
         """Update noise density.
@@ -431,3 +491,36 @@ class MainWindow(QMainWindow):
         if mode is not None:
             self.gl_widget.engine.set_display_mode(mode)
             self.gl_widget.update()
+    
+    def reset_viewport(self):
+        """Reset viewport to original zoom and pan state (Home key)."""
+        self.gl_widget.reset_viewport()
+    
+    def decrease_brush_size(self):
+        """Decrease brush size by 10% ([ key)."""
+        current_size = self.radius_slider.value()
+        new_size = max(1, int(current_size * 0.9))  # Decrease by 10%, minimum 1
+        self.radius_slider.setValue(new_size)
+        # update_brush_radius will be called automatically by slider valueChanged signal
+    
+    def increase_brush_size(self):
+        """Increase brush size by 10% (] key)."""
+        current_size = self.radius_slider.value()
+        new_size = min(100, int(current_size * 1.1) + 1)  # Increase by 10%+1, maximum 100
+        self.radius_slider.setValue(new_size)
+        # update_brush_radius will be called automatically by slider valueChanged signal
+    
+    def open_color_picker(self):
+        """Open color picker dialog for painting."""
+        color = QColorDialog.getColor(self.current_paint_color, self, "Choose Paint Color")
+        if color.isValid():
+            self.current_paint_color = color
+            self.update_color_button()
+            # Update the GL widget's paint color
+            self.gl_widget.set_paint_color(color)
+    
+    def update_color_button(self):
+        """Update the color button to show current paint color."""
+        r, g, b = self.current_paint_color.red(), self.current_paint_color.green(), self.current_paint_color.blue()
+        self.color_button.setStyleSheet(f"QPushButton {{ background-color: rgb({r}, {g}, {b}); border: 1px solid black; }}")
+        self.color_button.setToolTip(f"Paint Color: RGB({r}, {g}, {b})")
