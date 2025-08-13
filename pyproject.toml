@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "life"
+version = "0.1.0"
+authors = [
+  { name="Life Game", email="life@example.com" },
+]
+description = "A GPU-accelerated Conway's Game of Life implementation using CUDA/CuPy and PySide6"
+readme = "README.md"
+requires-python = ">=3.8"
+dependencies = [
+    "cupy-cuda12x>=13.0.0",
+    "numpy>=1.24.0",
+    "PySide6>=6.5.0",
+    "PyOpenGL>=3.1.0",
+]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Topic :: Games/Entertainment :: Simulation",
+    "Topic :: Scientific/Engineering :: Visualization",
+]
+
+[project.scripts]
+life = "life.__main__:main"
+
+[project.urls]
+"Homepage" = "https://github.com/example/life"
+"Bug Tracker" = "https://github.com/example/life/issues"
