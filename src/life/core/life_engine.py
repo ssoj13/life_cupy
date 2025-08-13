@@ -1,20 +1,21 @@
-"""Game of Life engine using CuPy and CUDA kernels."""
+"""Multi-channel cellular automata engine using CuPy and CUDA kernels."""
 import cupy as cp
 import numpy as np
 from typing import Tuple, Optional
 import math
 import time
 
-from .cuda_kernels import compile_kernels
+from .cuda_kernels import (RuleType, BinaryRule, MultiStateRule, MultiChannelRule, get_bs_tables)
+from .simple_kernels import compile_simple_kernels
 from ..utils.config import Config
 
 
-class GameOfLifeEngine:
-    """GPU-accelerated Game of Life simulation engine."""
+class MultiChannelEngine:
+    """GPU-accelerated multi-channel cellular automata simulation engine."""
     
     def __init__(self, width: int = Config.DEFAULT_FIELD_WIDTH, 
                  height: int = Config.DEFAULT_FIELD_HEIGHT):
-        """Initialize the Game of Life engine.
+        """Initialize the multi-channel engine.
         
         Args:
             width: Field width in cells
@@ -25,18 +26,28 @@ class GameOfLifeEngine:
         self.generation = 0
         self.is_running = False
         
-        # Compile CUDA kernels
-        self.kernels = compile_kernels()
+        # Current rule settings
+        self.rule_type = RuleType.BINARY_BS
+        self.rule_id = BinaryRule.CONWAY_LIFE
+        self.display_mode = 0  # 0=RGB, 1=Money as brightness
         
-        # Initialize double buffer for simulation
+        # Compile simplified CUDA kernels
+        self.kernels = compile_simple_kernels()
+        
+        # Initialize double buffer for simulation (4-channel cells as 4D arrays)
         self.current_buffer = 0
         self.buffers = [
-            cp.zeros((height, width), dtype=cp.uint8),
-            cp.zeros((height, width), dtype=cp.uint8)
+            cp.zeros((height, width, 4), dtype=cp.uint8),
+            cp.zeros((height, width, 4), dtype=cp.uint8)
         ]
         
         # RGBA buffer for display
         self.rgba_buffer = cp.zeros((height, width, 4), dtype=cp.uint8)
+        
+        # Clipboard buffers for save/restore
+        self.clipboards = [
+            cp.zeros((height, width, 4), dtype=cp.uint8) for _ in range(4)
+        ]
         
         # Calculate grid dimensions for kernels
         self.threads_per_block = Config.THREADS_PER_BLOCK
@@ -53,6 +64,20 @@ class GameOfLifeEngine:
         """
         return math.ceil(total_elements / self.threads_per_block)
     
+    def set_rule(self, rule_type: RuleType, rule_id: int):
+        """Set the current cellular automata rule.
+        
+        Args:
+            rule_type: Type of rule (binary, multistate, multichannel)
+            rule_id: Specific rule within the type
+        """
+        self.rule_type = rule_type
+        self.rule_id = rule_id
+        
+        # Reset field when switching rule types
+        if rule_type != self.rule_type:
+            self.reset()
+    
     def step(self, steps: int = 1) -> None:
         """Advance simulation by specified number of steps.
         
@@ -63,11 +88,13 @@ class GameOfLifeEngine:
             current = self.buffers[self.current_buffer]
             next_buffer = self.buffers[1 - self.current_buffer]
             
-            # Launch life step kernel
-            self.kernels['life_step'](
-                (self.blocks_per_grid,), (self.threads_per_block,),
+            # Launch simplified unified kernel
+            blocks = self._calculate_grid_size(self.width * self.height)
+            self.kernels['simple_unified_step'](
+                (blocks,), (self.threads_per_block,),
                 (current.ravel(), next_buffer.ravel(), 
-                 self.width, self.height)
+                 self.width, self.height, 
+                 int(self.rule_type), int(self.rule_id))
             )
             
             # Swap buffers
@@ -76,60 +103,59 @@ class GameOfLifeEngine:
     
     def reset(self) -> None:
         """Reset the field to empty state."""
-        size = self.width * self.height
-        blocks = self._calculate_grid_size(size)
-        
+        # Clear both buffers
         for buffer in self.buffers:
-            self.kernels['clear_field'](
-                (blocks,), (self.threads_per_block,),
-                (buffer.ravel(), size)
-            )
+            buffer.fill(0)
         
         self.generation = 0
         self.current_buffer = 0
     
-    def draw_circle(self, x: int, y: int, radius: int, value: bool = True) -> None:
+    def draw_circle(self, x: int, y: int, radius: int, value: Tuple[int, int, int, int] = (255, 0, 0, 0)) -> None:
         """Draw a filled circle on the field.
         
         Args:
             x: Center X coordinate
             y: Center Y coordinate
             radius: Circle radius in cells
-            value: True to set cells alive, False to kill them
+            value: 4-channel values (ch1, ch2, ch3, ch4)
         """
-        current = self.buffers[self.current_buffer]
-        blocks = self._calculate_grid_size(self.width * self.height)
-        
-        self.kernels['draw_circle'](
-            (blocks,), (self.threads_per_block,),
-            (current.ravel(), self.width, self.height,
-             x, y, radius, cp.uint8(1 if value else 0))
-        )
+        # Simple CPU-based circle drawing for now
+        radius_sq = radius * radius
+        for dy in range(-radius, radius + 1):
+            for dx in range(-radius, radius + 1):
+                if dx * dx + dy * dy <= radius_sq:
+                    px = x + dx
+                    py = y + dy
+                    if 0 <= px < self.width and 0 <= py < self.height:
+                        self.buffers[self.current_buffer][py, px, 0] = value[0]
+                        self.buffers[self.current_buffer][py, px, 1] = value[1]
+                        self.buffers[self.current_buffer][py, px, 2] = value[2]
+                        self.buffers[self.current_buffer][py, px, 3] = value[3]
     
     def add_noise(self, density: float = 0.3, region: Optional[Tuple[int, int, int, int]] = None) -> None:
         """Add random noise pattern to the field.
         
         Args:
-            density: Probability of cell being alive (0.0 to 1.0)
+            density: Probability of cell being affected (0.0 to 1.0)
             region: Optional (x, y, width, height) to limit noise to region
         """
         current = self.buffers[self.current_buffer]
         
-        if region:
-            x, y, w, h = region
-            # Create temporary buffer for region
-            temp = cp.random.random((h, w)) < density
-            current[y:y+h, x:x+w] = temp.astype(cp.uint8)
-        else:
-            # Use kernel for full field noise
-            blocks = self._calculate_grid_size(self.width * self.height)
-            seed = int(time.time() * 1000000) % (2**32)
-            
-            self.kernels['add_noise'](
-                (blocks,), (self.threads_per_block,),
-                (current.ravel(), self.width, self.height,
-                 cp.float32(density), cp.uint64(seed))
-            )
+        # Simple CPU-based noise generation
+        if self.rule_type == 0 or self.rule_type == 1:  # Binary or multistate
+            # Random binary noise
+            noise = cp.random.random((self.height, self.width)) < density
+            current[:, :, 0] = cp.where(noise, 255, current[:, :, 0])
+            current[:, :, 1] = 0
+            current[:, :, 2] = 0
+            current[:, :, 3] = 0
+        else:  # Multichannel
+            # Random values for all channels
+            noise_mask = cp.random.random((self.height, self.width)) < density
+            current[:, :, 0] = cp.where(noise_mask, cp.random.randint(150, 256, (self.height, self.width)), current[:, :, 0])
+            current[:, :, 1] = cp.where(noise_mask, cp.random.randint(150, 256, (self.height, self.width)), current[:, :, 1])
+            current[:, :, 2] = cp.where(noise_mask, cp.random.randint(150, 256, (self.height, self.width)), current[:, :, 2])
+            current[:, :, 3] = cp.where(noise_mask, cp.random.randint(100, 201, (self.height, self.width)), current[:, :, 3])
     
     def get_rgba_array(self) -> cp.ndarray:
         """Get current field as RGBA array for display.
@@ -138,13 +164,70 @@ class GameOfLifeEngine:
             RGBA array suitable for OpenGL texture
         """
         current = self.buffers[self.current_buffer]
-        size = self.width * self.height
-        blocks = self._calculate_grid_size(size)
         
-        self.kernels['field_to_rgba'](
-            (blocks,), (self.threads_per_block,),
-            (current.ravel(), self.rgba_buffer.ravel(), size)
-        )
+        if self.display_mode == 0:  # RGB display
+            if self.rule_type == 0 or self.rule_type == 1:  # Binary/multistate - show as black/white
+                value = current[:, :, 0]
+                self.rgba_buffer[:, :, 0] = value
+                self.rgba_buffer[:, :, 1] = value
+                self.rgba_buffer[:, :, 2] = value
+                self.rgba_buffer[:, :, 3] = 255
+            else:  # Multichannel
+                self.rgba_buffer[:, :, 0] = current[:, :, 0]  # Mental -> R
+                self.rgba_buffer[:, :, 1] = current[:, :, 1]  # Body -> G
+                self.rgba_buffer[:, :, 2] = current[:, :, 2]  # Social -> B
+                self.rgba_buffer[:, :, 3] = 255
+                
+        elif self.display_mode == 1:  # Money as brightness
+            avg = (current[:, :, 0] + current[:, :, 1] + current[:, :, 2]) // 3
+            brightness = (avg * current[:, :, 3]) // 255
+            self.rgba_buffer[:, :, 0] = brightness
+            self.rgba_buffer[:, :, 1] = brightness
+            self.rgba_buffer[:, :, 2] = brightness
+            self.rgba_buffer[:, :, 3] = 255
+            
+        elif self.display_mode == 2:  # Health heatmap
+            # Average health as heatmap (red = low, yellow = medium, green = high)
+            avg_health = (current[:, :, 0] + current[:, :, 1] + current[:, :, 2]) // 3
+            self.rgba_buffer[:, :, 0] = 255 - avg_health  # Red decreases with health
+            self.rgba_buffer[:, :, 1] = avg_health  # Green increases with health
+            self.rgba_buffer[:, :, 2] = 0
+            self.rgba_buffer[:, :, 3] = 255
+            
+        elif self.display_mode == 3:  # Channel 1 only
+            value = current[:, :, 0]
+            self.rgba_buffer[:, :, 0] = value
+            self.rgba_buffer[:, :, 1] = 0
+            self.rgba_buffer[:, :, 2] = 0
+            self.rgba_buffer[:, :, 3] = 255
+            
+        elif self.display_mode == 4:  # Channel 2 only
+            value = current[:, :, 1]
+            self.rgba_buffer[:, :, 0] = 0
+            self.rgba_buffer[:, :, 1] = value
+            self.rgba_buffer[:, :, 2] = 0
+            self.rgba_buffer[:, :, 3] = 255
+            
+        elif self.display_mode == 5:  # Channel 3 only
+            value = current[:, :, 2]
+            self.rgba_buffer[:, :, 0] = 0
+            self.rgba_buffer[:, :, 1] = 0
+            self.rgba_buffer[:, :, 2] = value
+            self.rgba_buffer[:, :, 3] = 255
+            
+        elif self.display_mode == 6:  # Channel 4 only
+            value = current[:, :, 3]
+            self.rgba_buffer[:, :, 0] = value
+            self.rgba_buffer[:, :, 1] = value
+            self.rgba_buffer[:, :, 2] = value
+            self.rgba_buffer[:, :, 3] = 255
+        else:
+            # Default to first channel
+            value = current[:, :, 0]
+            self.rgba_buffer[:, :, 0] = value
+            self.rgba_buffer[:, :, 1] = value
+            self.rgba_buffer[:, :, 2] = value
+            self.rgba_buffer[:, :, 3] = 255
         
         return self.rgba_buffer
     
@@ -152,7 +235,7 @@ class GameOfLifeEngine:
         """Get current field as NumPy array on CPU.
         
         Returns:
-            Current field as NumPy array
+            Current field as structured NumPy array
         """
         return cp.asnumpy(self.buffers[self.current_buffer])
     
@@ -160,12 +243,12 @@ class GameOfLifeEngine:
         """Set field from NumPy array.
         
         Args:
-            field: NumPy array with field data
+            field: NumPy structured array with field data
         """
         if field.shape != (self.height, self.width):
             raise ValueError(f"Field shape {field.shape} doesn't match engine size ({self.height}, {self.width})")
         
-        self.buffers[self.current_buffer] = cp.asarray(field, dtype=cp.uint8)
+        self.buffers[self.current_buffer] = cp.asarray(field)
     
     def resize(self, width: int, height: int) -> None:
         """Resize the field, preserving existing cells where possible.
@@ -183,48 +266,83 @@ class GameOfLifeEngine:
         
         # Recreate buffers
         self.buffers = [
-            cp.zeros((height, width), dtype=cp.uint8),
-            cp.zeros((height, width), dtype=cp.uint8)
+            cp.zeros((height, width, 4), dtype=cp.uint8),
+            cp.zeros((height, width, 4), dtype=cp.uint8)
         ]
         self.rgba_buffer = cp.zeros((height, width, 4), dtype=cp.uint8)
+        
+        # Recreate clipboards
+        self.clipboards = [
+            cp.zeros((height, width, 4), dtype=cp.uint8) for _ in range(4)
+        ]
         
         # Copy old data (crop or pad as needed)
         min_h = min(old_field.shape[0], height)
         min_w = min(old_field.shape[1], width)
-        self.buffers[0][:min_h, :min_w] = old_field[:min_h, :min_w]
+        self.buffers[0][:min_h, :min_w, :] = old_field[:min_h, :min_w, :]
         
         # Update grid dimensions
         self.blocks_per_grid = self._calculate_grid_size(width * height)
         self.current_buffer = 0
     
-    def set_pattern(self, pattern: np.ndarray, x: int, y: int) -> None:
-        """Place a pattern at specified position.
+    def save_to_clipboard(self, slot: int) -> None:
+        """Save current field to clipboard slot.
         
         Args:
-            pattern: 2D array with pattern (1 for alive, 0 for dead)
-            x: Top-left X coordinate
-            y: Top-left Y coordinate
+            slot: Clipboard slot (0-3)
         """
-        pattern_gpu = cp.asarray(pattern, dtype=cp.uint8)
-        h, w = pattern.shape
+        if 0 <= slot < 4:
+            cp.copyto(self.clipboards[slot], self.buffers[self.current_buffer])
+    
+    def load_from_clipboard(self, slot: int) -> None:
+        """Load field from clipboard slot.
         
-        # Clip pattern to field boundaries
-        x_end = min(x + w, self.width)
-        y_end = min(y + h, self.height)
-        x_start = max(0, x)
-        y_start = max(0, y)
+        Args:
+            slot: Clipboard slot (0-3)
+        """
+        if 0 <= slot < 4:
+            cp.copyto(self.buffers[self.current_buffer], self.clipboards[slot])
+    
+    def set_display_mode(self, mode: int) -> None:
+        """Set display mode for multichannel visualization.
         
-        # Calculate pattern offsets if placement is partially outside
-        pattern_x_start = max(0, -x)
-        pattern_y_start = max(0, -y)
-        pattern_x_end = pattern_x_start + (x_end - x_start)
-        pattern_y_end = pattern_y_start + (y_end - y_start)
-        
-        # Place pattern
-        self.buffers[self.current_buffer][y_start:y_end, x_start:x_end] = \
-            pattern_gpu[pattern_y_start:pattern_y_end, pattern_x_start:pattern_x_end]
+        Args:
+            mode: 0=RGB display, 1=Money as brightness
+        """
+        self.display_mode = mode
     
     @property
     def current_field(self) -> cp.ndarray:
         """Get current field buffer."""
         return self.buffers[self.current_buffer]
+    
+    @property
+    def rule_name(self) -> str:
+        """Get human-readable name of current rule."""
+        if self.rule_type == RuleType.BINARY_BS:
+            rule_names = {
+                BinaryRule.CONWAY_LIFE: "Conway's Life (B3/S23)",
+                BinaryRule.HIGHLIFE: "HighLife (B36/S23)",
+                BinaryRule.SEEDS: "Seeds (B2/S)",
+                BinaryRule.DAY_NIGHT: "Day & Night (B3678/S34678)",
+                BinaryRule.MAZE: "Maze (B3/S12345)",
+                BinaryRule.REPLICATOR: "Replicator (B1357/S1357)",
+                BinaryRule.DRYLIFE: "DryLife (B37/S23)",
+                BinaryRule.LIVE_FREE_DIE: "Live Free or Die (B2/S0)",
+                BinaryRule.RULE_2X2: "2x2 (B36/S125)",
+                BinaryRule.LIFE_WITHOUT_DEATH: "Life Without Death (B3/S012345678)"
+            }
+            return rule_names.get(self.rule_id, "Unknown Binary Rule")
+        elif self.rule_type == RuleType.MULTISTATE:
+            if self.rule_id == MultiStateRule.BRIANS_BRAIN:
+                return "Brian's Brain"
+            return "Unknown Multi-State Rule"
+        elif self.rule_type == RuleType.MULTICHANNEL:
+            if self.rule_id == MultiChannelRule.LIFE_SIMULATION:
+                return "Life Simulation (Health/Money)"
+            return "Unknown Multi-Channel Rule"
+        return "Unknown Rule"
+
+
+# Backward compatibility alias
+GameOfLifeEngine = MultiChannelEngine

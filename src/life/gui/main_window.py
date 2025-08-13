@@ -1,12 +1,13 @@
 """Main application window for Game of Life."""
 from PySide6.QtWidgets import (QMainWindow, QToolBar, QWidget, QVBoxLayout, 
                               QHBoxLayout, QPushButton, QLabel, QSlider,
-                              QSpinBox, QGroupBox, QDockWidget, QStatusBar)
+                              QSpinBox, QGroupBox, QDockWidget, QStatusBar, QComboBox)
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QAction, QKeySequence
 
 from .gl_widget import LifeGLWidget
 from ..utils.config import Config
+from ..core import RuleType, BinaryRule, MultiStateRule, MultiChannelRule
 
 
 class MainWindow(QMainWindow):
@@ -59,6 +60,15 @@ class MainWindow(QMainWindow):
         
         toolbar.addSeparator()
         
+        # Rule selection combobox
+        toolbar.addWidget(QLabel("Rule:"))
+        self.rule_combobox = QComboBox()
+        self.setup_rule_combobox()
+        self.rule_combobox.currentTextChanged.connect(self.change_rule)
+        toolbar.addWidget(self.rule_combobox)
+        
+        toolbar.addSeparator()
+        
         # Generation counter
         self.generation_label = QLabel("Generation: 0")
         self.generation_label.setStyleSheet("QLabel { padding: 0 10px; }")
@@ -89,6 +99,24 @@ class MainWindow(QMainWindow):
         clear_action = QAction("🗑 Clear", self)
         clear_action.triggered.connect(self.clear_field)
         toolbar.addAction(clear_action)
+        
+        toolbar.addSeparator()
+        
+        # Clipboard buttons - separate save and load
+        toolbar.addWidget(QLabel("Save:"))
+        for i in range(4):
+            save_action = QAction(f"S{i+1}", self)
+            save_action.setToolTip(f"Save to slot {i+1}")
+            save_action.triggered.connect(lambda checked, slot=i: self.save_to_clipboard(slot))
+            toolbar.addAction(save_action)
+        
+        toolbar.addSeparator()
+        toolbar.addWidget(QLabel("Load:"))
+        for i in range(4):
+            load_action = QAction(f"L{i+1}", self)
+            load_action.setToolTip(f"Load from slot {i+1}")
+            load_action.triggered.connect(lambda checked, slot=i: self.load_from_clipboard(slot))
+            toolbar.addAction(load_action)
         
     def create_dock_widget(self):
         """Create dock widget with drawing tool controls."""
@@ -162,6 +190,25 @@ class MainWindow(QMainWindow):
         
         field_group.setLayout(field_layout)
         layout.addWidget(field_group)
+        
+        # Display mode settings
+        display_group = QGroupBox("Display Mode")
+        display_layout = QVBoxLayout()
+        
+        # Display mode selection
+        self.display_mode_combobox = QComboBox()
+        self.display_mode_combobox.addItem("RGB Display", 0)
+        self.display_mode_combobox.addItem("Money as Brightness", 1)
+        self.display_mode_combobox.addItem("Health Heatmap", 2)
+        self.display_mode_combobox.addItem("Channel 1 Only", 3)
+        self.display_mode_combobox.addItem("Channel 2 Only", 4)
+        self.display_mode_combobox.addItem("Channel 3 Only", 5)
+        self.display_mode_combobox.addItem("Channel 4 Only", 6)
+        self.display_mode_combobox.currentIndexChanged.connect(self.change_display_mode)
+        display_layout.addWidget(self.display_mode_combobox)
+        
+        display_group.setLayout(display_layout)
+        layout.addWidget(display_group)
         
         # Instructions
         instructions = QGroupBox("Controls")
@@ -325,3 +372,62 @@ class MainWindow(QMainWindow):
         # Update spinboxes to reflect current field size
         self.width_spinbox.setValue(width)
         self.height_spinbox.setValue(height)
+        
+    def setup_rule_combobox(self):
+        """Setup the rule selection combobox with all available rules."""
+        self.rule_combobox.clear()
+        
+        # Add binary rules
+        self.rule_combobox.addItem("Conway's Life (B3/S23)", (RuleType.BINARY_BS, BinaryRule.CONWAY_LIFE))
+        self.rule_combobox.addItem("HighLife (B36/S23)", (RuleType.BINARY_BS, BinaryRule.HIGHLIFE))
+        self.rule_combobox.addItem("Seeds (B2/S)", (RuleType.BINARY_BS, BinaryRule.SEEDS))
+        self.rule_combobox.addItem("Day & Night (B3678/S34678)", (RuleType.BINARY_BS, BinaryRule.DAY_NIGHT))
+        self.rule_combobox.addItem("Maze (B3/S12345)", (RuleType.BINARY_BS, BinaryRule.MAZE))
+        self.rule_combobox.addItem("Replicator (B1357/S1357)", (RuleType.BINARY_BS, BinaryRule.REPLICATOR))
+        self.rule_combobox.addItem("DryLife (B37/S23)", (RuleType.BINARY_BS, BinaryRule.DRYLIFE))
+        self.rule_combobox.addItem("Live Free or Die (B2/S0)", (RuleType.BINARY_BS, BinaryRule.LIVE_FREE_DIE))
+        self.rule_combobox.addItem("2x2 (B36/S125)", (RuleType.BINARY_BS, BinaryRule.RULE_2X2))
+        self.rule_combobox.addItem("Life Without Death (B3/S012345678)", (RuleType.BINARY_BS, BinaryRule.LIFE_WITHOUT_DEATH))
+        
+        # Add multistate rules
+        self.rule_combobox.addItem("Brian's Brain", (RuleType.MULTISTATE, MultiStateRule.BRIANS_BRAIN))
+        
+        # Add multichannel rules  
+        self.rule_combobox.addItem("Life Simulation (Health/Money)", (RuleType.MULTICHANNEL, MultiChannelRule.LIFE_SIMULATION))
+        
+        # Set default to Conway's Life
+        self.rule_combobox.setCurrentIndex(0)
+        
+    def change_rule(self):
+        """Change the cellular automata rule based on combobox selection."""
+        rule_data = self.rule_combobox.currentData()
+        if rule_data:
+            rule_type, rule_id = rule_data
+            self.gl_widget.engine.set_rule(rule_type, rule_id)
+            self.gl_widget.update()
+            
+    def save_to_clipboard(self, slot: int):
+        """Save current field state to clipboard slot.
+        
+        Args:
+            slot: Clipboard slot number (0-3)
+        """
+        self.gl_widget.engine.save_to_clipboard(slot)
+        self.status_bar.showMessage(f"Field saved to clipboard slot {slot + 1}", 2000)
+        
+    def load_from_clipboard(self, slot: int):
+        """Load field state from clipboard slot.
+        
+        Args:
+            slot: Clipboard slot number (0-3)
+        """
+        self.gl_widget.engine.load_from_clipboard(slot)
+        self.gl_widget.update()
+        self.status_bar.showMessage(f"Field loaded from clipboard slot {slot + 1}", 2000)
+        
+    def change_display_mode(self):
+        """Change the display mode for multichannel visualization."""
+        mode = self.display_mode_combobox.currentData()
+        if mode is not None:
+            self.gl_widget.engine.set_display_mode(mode)
+            self.gl_widget.update()

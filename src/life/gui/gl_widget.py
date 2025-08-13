@@ -7,7 +7,7 @@ from PySide6.QtGui import QMouseEvent, QWheelEvent
 from OpenGL.GL import *
 from typing import Optional
 
-from ..core.life_engine import GameOfLifeEngine
+from ..core.life_engine import MultiChannelEngine
 from ..utils.config import Config
 
 
@@ -22,7 +22,7 @@ class LifeGLWidget(QOpenGLWidget):
         super().__init__(parent)
         
         # Engine
-        self.engine = GameOfLifeEngine()
+        self.engine = MultiChannelEngine()
         
         # Display settings
         self.zoom = 1.0
@@ -33,8 +33,11 @@ class LifeGLWidget(QOpenGLWidget):
         self.drawing = False
         self.erasing = False
         self.last_draw_pos: Optional[QPoint] = None
+        self.stroke_points = []  # Store stroke points for batch drawing
+        self.current_draw_value = None  # Value to draw with current stroke
         self.brush_radius = Config.DEFAULT_BRUSH_RADIUS
         self.noise_density = Config.DEFAULT_NOISE_DENSITY
+        self.stroke_step_distance = 2.0  # Distance between resampled points
         
         # Animation
         self.timer = QTimer()
@@ -126,6 +129,10 @@ class LifeGLWidget(QOpenGLWidget):
         glPopMatrix()
         glDisable(GL_TEXTURE_2D)
         
+        # Draw stroke overlay if currently drawing
+        if (self.drawing or self.erasing) and len(self.stroke_points) > 1:
+            self.draw_stroke_overlay()
+        
     def update_simulation(self):
         """Update simulation and trigger redraw."""
         if self.engine.is_running:
@@ -167,10 +174,22 @@ class LifeGLWidget(QOpenGLWidget):
         """
         if event.button() == Qt.LeftButton:
             self.drawing = True
-            self.draw_at_position(event.pos())
+            self.stroke_points = []
+            # Determine draw value based on current rule type
+            if self.engine.rule_type == 2:  # Multichannel
+                import random
+                self.current_draw_value = (random.randint(150, 255),  # Mental health
+                                         random.randint(150, 255),   # Body health  
+                                         random.randint(150, 255),   # Social health
+                                         random.randint(100, 200))   # Money
+            else:  # Binary or multistate
+                self.current_draw_value = (255, 0, 0, 0)  # Standard alive cell
+            self.add_stroke_point(event.pos())
         elif event.button() == Qt.RightButton:
             self.erasing = True
-            self.erase_at_position(event.pos())
+            self.stroke_points = []
+            self.current_draw_value = (0, 0, 0, 0)  # Erase value
+            self.add_stroke_point(event.pos())
         elif event.button() == Qt.MiddleButton:
             self.last_draw_pos = event.pos()
     
@@ -180,10 +199,9 @@ class LifeGLWidget(QOpenGLWidget):
         Args:
             event: Mouse event
         """
-        if self.drawing:
-            self.draw_at_position(event.pos())
-        elif self.erasing:
-            self.erase_at_position(event.pos())
+        if self.drawing or self.erasing:
+            self.add_stroke_point(event.pos())
+            self.update()  # Update to show stroke overlay
         elif event.buttons() & Qt.MiddleButton and self.last_draw_pos:
             # Pan view
             delta = event.pos() - self.last_draw_pos
@@ -198,9 +216,15 @@ class LifeGLWidget(QOpenGLWidget):
         Args:
             event: Mouse event
         """
+        if self.drawing or self.erasing:
+            # Draw the complete stroke at once
+            self.draw_stroke()
+            
         self.drawing = False
         self.erasing = False
         self.last_draw_pos = None
+        self.stroke_points = []
+        self.current_draw_value = None
     
     def wheelEvent(self, event: QWheelEvent):
         """Handle mouse wheel events for zooming.
@@ -213,33 +237,119 @@ class LifeGLWidget(QOpenGLWidget):
         self.zoom = max(0.1, min(10.0, self.zoom))
         self.update()
     
-    def draw_at_position(self, pos: QPoint):
-        """Draw at mouse position.
+    def add_stroke_point(self, pos: QPoint):
+        """Add a point to the current stroke.
         
         Args:
             pos: Mouse position in widget coordinates
         """
         # Convert widget coordinates to field coordinates
-        x = int((pos.x() - self.pan_x) / self.zoom)
-        y = int((pos.y() - self.pan_y) / self.zoom)
+        x = (pos.x() - self.pan_x) / self.zoom
+        y = (pos.y() - self.pan_y) / self.zoom
         
+        # Only add if within field bounds
         if 0 <= x < self.engine.width and 0 <= y < self.engine.height:
-            self.engine.draw_circle(x, y, self.brush_radius, True)
-            self.update()
+            self.stroke_points.append((x, y))
     
-    def erase_at_position(self, pos: QPoint):
-        """Erase at mouse position.
+    def resample_stroke(self, points, step_distance):
+        """Resample stroke points with consistent distance between points.
         
         Args:
-            pos: Mouse position in widget coordinates
+            points: List of (x, y) tuples
+            step_distance: Distance between resampled points
+            
+        Returns:
+            List of resampled (x, y) tuples
         """
-        # Convert widget coordinates to field coordinates
-        x = int((pos.x() - self.pan_x) / self.zoom)
-        y = int((pos.y() - self.pan_y) / self.zoom)
+        if len(points) < 2:
+            return points
+            
+        resampled = [points[0]]  # Start with first point
+        current_distance = 0
         
-        if 0 <= x < self.engine.width and 0 <= y < self.engine.height:
-            self.engine.draw_circle(x, y, self.brush_radius, False)
-            self.update()
+        for i in range(1, len(points)):
+            x1, y1 = points[i-1]
+            x2, y2 = points[i]
+            
+            segment_length = ((x2 - x1)**2 + (y2 - y1)**2)**0.5
+            
+            if segment_length == 0:
+                continue
+                
+            # How many steps fit in this segment?
+            remaining_distance = step_distance - current_distance
+            
+            while remaining_distance <= segment_length:
+                # Calculate point at remaining_distance along this segment
+                t = remaining_distance / segment_length
+                new_x = x1 + (x2 - x1) * t
+                new_y = y1 + (y2 - y1) * t
+                resampled.append((new_x, new_y))
+                
+                # Move to next step
+                remaining_distance += step_distance
+                
+            # Update current distance for next iteration
+            current_distance = segment_length - (remaining_distance - step_distance)
+            
+        return resampled
+    
+    def draw_stroke(self):
+        """Draw the complete stroke with resampling."""
+        if not self.stroke_points or self.current_draw_value is None:
+            return
+            
+        # If only one point, just draw a circle
+        if len(self.stroke_points) == 1:
+            x, y = self.stroke_points[0]
+            self.engine.draw_circle(int(x), int(y), self.brush_radius, self.current_draw_value)
+        else:
+            # Resample the stroke for consistent spacing
+            resampled_points = self.resample_stroke(self.stroke_points, self.stroke_step_distance)
+            
+            # Draw circles at each resampled point
+            for x, y in resampled_points:
+                int_x, int_y = int(x), int(y)
+                if 0 <= int_x < self.engine.width and 0 <= int_y < self.engine.height:
+                    self.engine.draw_circle(int_x, int_y, self.brush_radius, self.current_draw_value)
+        
+        # Update display after drawing complete stroke
+        self.update()
+    
+    def draw_stroke_overlay(self):
+        """Draw temporary stroke overlay to show current drawing path."""
+        if len(self.stroke_points) < 2:
+            return
+            
+        # Set up overlay drawing
+        glPushMatrix()
+        glTranslatef(self.pan_x, self.pan_y, 0)
+        glScalef(self.zoom, self.zoom, 1)
+        
+        # Set stroke color based on drawing/erasing
+        if self.erasing:
+            glColor4f(1.0, 0.0, 0.0, 0.7)  # Red for erasing
+        else:
+            glColor4f(0.0, 1.0, 0.0, 0.7)  # Green for drawing
+            
+        # Draw stroke line
+        glLineWidth(max(1.0, self.brush_radius * self.zoom / 4))
+        glBegin(GL_LINE_STRIP)
+        for x, y in self.stroke_points:
+            glVertex2f(x, y)
+        glEnd()
+        
+        # Draw brush circles at key points for better visualization
+        glPointSize(max(2.0, self.brush_radius * self.zoom / 2))
+        glBegin(GL_POINTS)
+        for i, (x, y) in enumerate(self.stroke_points):
+            if i % 3 == 0:  # Every 3rd point to avoid clutter
+                glVertex2f(x, y)
+        glEnd()
+        
+        glPopMatrix()
+        glColor4f(1.0, 1.0, 1.0, 1.0)  # Reset color
+    
     
     def add_noise(self):
         """Add noise pattern to the field."""
@@ -262,3 +372,11 @@ class LifeGLWidget(QOpenGLWidget):
             density: Noise density (0.0 to 1.0)
         """
         self.noise_density = min(max(0.0, density), 1.0)
+    
+    def set_stroke_step_distance(self, distance: float):
+        """Set the distance between resampled stroke points.
+        
+        Args:
+            distance: Distance between points in field coordinates
+        """
+        self.stroke_step_distance = max(0.5, min(10.0, distance))
