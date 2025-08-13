@@ -5,9 +5,10 @@ from enum import IntEnum
 
 class RuleType(IntEnum):
     """Types of cellular automata rules."""
-    BINARY_BS = 0          # Classic binary B/S notation rules
+    BINARY_BS = 0          # Classic binary B/S notation rules (RGBA interpreted as binary)
     MULTISTATE = 1         # Multi-state rules (Brian's Brain, Generations)
     MULTICHANNEL = 2       # Multi-channel rules (Life simulation, RGB)
+    EXTENDED_CLASSIC = 3   # RGB layers with independent classic rules
 
 
 class BinaryRule(IntEnum):
@@ -34,6 +35,11 @@ class MultiChannelRule(IntEnum):
     """Multi-channel cellular automata rules."""
     LIFE_SIMULATION = 0    # Health/Money simulation
     RGB_EVOLUTION = 1      # Color-based evolution
+
+
+class ExtendedClassicRule(IntEnum):
+    """Extended classic rules with RGB interpretation.""" 
+    RGB_CONWAY = 0         # Conway's Life on each RGB channel independently
 
 
 # Cell structure (4 bytes per cell)

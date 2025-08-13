@@ -8,7 +8,7 @@ from PySide6.QtGui import QAction, QKeySequence, QColor
 
 from .gl_widget import LifeGLWidget
 from ..utils.config import Config
-from ..core import RuleType, BinaryRule, MultiStateRule, MultiChannelRule
+from ..core import RuleType, BinaryRule, MultiStateRule, MultiChannelRule, ExtendedClassicRule
 
 
 class MainWindow(QMainWindow):
@@ -244,7 +244,11 @@ class MainWindow(QMainWindow):
         inst_layout.addWidget(QLabel("• [/]: Brush Size ±10%"))
         inst_layout.addWidget(QLabel("• ESC: Exit Application"))
         inst_layout.addWidget(QLabel("• GPU anti-aliased drawing"))
-        inst_layout.addWidget(QLabel("• Color picker works in multichannel mode"))
+        inst_layout.addWidget(QLabel("• Color picker works in all modes"))
+        inst_layout.addWidget(QLabel("• RGBA unified system"))
+        inst_layout.addWidget(QLabel("• Classic: 4 independent RGBA layers!"))
+        inst_layout.addWidget(QLabel("• RGB Conway: 3 independent RGB layers"))
+        inst_layout.addWidget(QLabel("• Life Sim: R=Mental G=Body B=Social"))
         instructions.setLayout(inst_layout)
         layout.addWidget(instructions)
         
@@ -454,6 +458,9 @@ class MainWindow(QMainWindow):
         
         # Add multichannel rules  
         self.rule_combobox.addItem("Life Simulation (Health/Money)", (RuleType.MULTICHANNEL, MultiChannelRule.LIFE_SIMULATION))
+        
+        # Add extended classic rules
+        self.rule_combobox.addItem("RGB Conway (3-Layer Life)", (RuleType.EXTENDED_CLASSIC, ExtendedClassicRule.RGB_CONWAY))
         
         # Set default to Conway's Life
         self.rule_combobox.setCurrentIndex(0)

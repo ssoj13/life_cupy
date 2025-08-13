@@ -361,15 +361,13 @@ class LifeGLWidget(QOpenGLWidget):
         x = (pos.x() - self.pan_x) / self.zoom
         y = (pos.y() - self.pan_y) / self.zoom
         
-        # Get current draw value
+        # Get current draw value - always use RGBA from color picker
         if self.erasing:
             value = (0, 0, 0, 0)
         else:
-            if self.engine.rule_type == 2:  # Multichannel
-                r, g, b = self.paint_color.red(), self.paint_color.green(), self.paint_color.blue()
-                value = (r, g, b, 200)
-            else:  # Binary or multistate
-                value = (255, 0, 0, 0)
+            # Always use full RGBA - kernels will interpret as needed
+            r, g, b = self.paint_color.red(), self.paint_color.green(), self.paint_color.blue()
+            value = (r, g, b, 255)  # Full alpha for solid painting
         
         # If we have a previous position, draw anti-aliased line segment
         if self.last_field_pos is not None:

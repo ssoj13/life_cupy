@@ -34,14 +34,14 @@ class MultiChannelEngine:
         # Compile simplified CUDA kernels
         self.kernels = compile_simple_kernels()
         
-        # Initialize double buffer for simulation (4-channel cells as 4D arrays)
+        # Initialize double buffer for simulation (unified RGBA arrays)
         self.current_buffer = 0
         self.buffers = [
             cp.zeros((height, width, 4), dtype=cp.uint8),
             cp.zeros((height, width, 4), dtype=cp.uint8)
         ]
         
-        # RGBA buffer for display
+        # Temporary buffer for display mode transformations
         self.rgba_buffer = cp.zeros((height, width, 4), dtype=cp.uint8)
         
         # Clipboard buffers for save/restore
@@ -297,23 +297,15 @@ class MultiChannelEngine:
     def get_rgba_array(self) -> cp.ndarray:
         """Get current field as RGBA array for display.
         
+        Unified RGBA system - field is already RGBA, just apply display mode filtering.
+        
         Returns:
             RGBA array suitable for OpenGL texture
         """
         current = self.buffers[self.current_buffer]
         
-        if self.display_mode == 0:  # RGB display
-            if self.rule_type == 0 or self.rule_type == 1:  # Binary/multistate - show as black/white
-                value = current[:, :, 0]
-                self.rgba_buffer[:, :, 0] = value
-                self.rgba_buffer[:, :, 1] = value
-                self.rgba_buffer[:, :, 2] = value
-                self.rgba_buffer[:, :, 3] = 255
-            else:  # Multichannel
-                self.rgba_buffer[:, :, 0] = current[:, :, 0]  # Mental -> R
-                self.rgba_buffer[:, :, 1] = current[:, :, 1]  # Body -> G
-                self.rgba_buffer[:, :, 2] = current[:, :, 2]  # Social -> B
-                self.rgba_buffer[:, :, 3] = 255
+        if self.display_mode == 0:  # RGB display - direct RGBA passthrough
+            return current
                 
         elif self.display_mode == 1:  # Money as brightness
             avg = (current[:, :, 0] + current[:, :, 1] + current[:, :, 2]) // 3
@@ -324,47 +316,38 @@ class MultiChannelEngine:
             self.rgba_buffer[:, :, 3] = 255
             
         elif self.display_mode == 2:  # Health heatmap
-            # Average health as heatmap (red = low, yellow = medium, green = high)
             avg_health = (current[:, :, 0] + current[:, :, 1] + current[:, :, 2]) // 3
             self.rgba_buffer[:, :, 0] = 255 - avg_health  # Red decreases with health
             self.rgba_buffer[:, :, 1] = avg_health  # Green increases with health
             self.rgba_buffer[:, :, 2] = 0
             self.rgba_buffer[:, :, 3] = 255
             
-        elif self.display_mode == 3:  # Channel 1 only
-            value = current[:, :, 0]
-            self.rgba_buffer[:, :, 0] = value
+        elif self.display_mode == 3:  # Channel 1 only (Red)
+            self.rgba_buffer[:, :, 0] = current[:, :, 0]
             self.rgba_buffer[:, :, 1] = 0
             self.rgba_buffer[:, :, 2] = 0
             self.rgba_buffer[:, :, 3] = 255
             
-        elif self.display_mode == 4:  # Channel 2 only
-            value = current[:, :, 1]
+        elif self.display_mode == 4:  # Channel 2 only (Green)
             self.rgba_buffer[:, :, 0] = 0
-            self.rgba_buffer[:, :, 1] = value
+            self.rgba_buffer[:, :, 1] = current[:, :, 1]
             self.rgba_buffer[:, :, 2] = 0
             self.rgba_buffer[:, :, 3] = 255
             
-        elif self.display_mode == 5:  # Channel 3 only
-            value = current[:, :, 2]
+        elif self.display_mode == 5:  # Channel 3 only (Blue)
             self.rgba_buffer[:, :, 0] = 0
             self.rgba_buffer[:, :, 1] = 0
-            self.rgba_buffer[:, :, 2] = value
+            self.rgba_buffer[:, :, 2] = current[:, :, 2]
             self.rgba_buffer[:, :, 3] = 255
             
-        elif self.display_mode == 6:  # Channel 4 only
-            value = current[:, :, 3]
-            self.rgba_buffer[:, :, 0] = value
-            self.rgba_buffer[:, :, 1] = value
-            self.rgba_buffer[:, :, 2] = value
+        elif self.display_mode == 6:  # Channel 4 only (Alpha as grayscale)
+            self.rgba_buffer[:, :, 0] = current[:, :, 3]
+            self.rgba_buffer[:, :, 1] = current[:, :, 3]
+            self.rgba_buffer[:, :, 2] = current[:, :, 3]
             self.rgba_buffer[:, :, 3] = 255
         else:
-            # Default to first channel
-            value = current[:, :, 0]
-            self.rgba_buffer[:, :, 0] = value
-            self.rgba_buffer[:, :, 1] = value
-            self.rgba_buffer[:, :, 2] = value
-            self.rgba_buffer[:, :, 3] = 255
+            # Default - direct RGBA passthrough
+            return current
         
         return self.rgba_buffer
     
@@ -380,10 +363,10 @@ class MultiChannelEngine:
         """Set field from NumPy array.
         
         Args:
-            field: NumPy structured array with field data
+            field: NumPy RGBA array with field data (height, width, 4)
         """
-        if field.shape != (self.height, self.width):
-            raise ValueError(f"Field shape {field.shape} doesn't match engine size ({self.height}, {self.width})")
+        if field.shape != (self.height, self.width, 4):
+            raise ValueError(f"Field shape {field.shape} doesn't match unified RGBA size ({self.height}, {self.width}, 4)")
         
         self.buffers[self.current_buffer] = cp.asarray(field)
     
@@ -401,7 +384,7 @@ class MultiChannelEngine:
         self.width = width
         self.height = height
         
-        # Recreate buffers
+        # Recreate unified RGBA buffers
         self.buffers = [
             cp.zeros((height, width, 4), dtype=cp.uint8),
             cp.zeros((height, width, 4), dtype=cp.uint8)
