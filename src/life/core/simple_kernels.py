@@ -3,6 +3,118 @@ import cupy as cp
 import numpy as np
 
 
+# Combined stroke resampling and drawing kernel
+STROKE_KERNEL = r'''
+extern "C" __global__
+void draw_resampled_stroke(unsigned char* field,
+                          const float* raw_points, const int num_raw_points,
+                          const float step_distance, const int brush_radius,
+                          const unsigned char ch1, const unsigned char ch2,
+                          const unsigned char ch3, const unsigned char ch4,
+                          const int width, const int height) {
+    
+    int thread_id = blockIdx.x * blockDim.x + threadIdx.x;
+    
+    if (num_raw_points < 2) {
+        // Single point case
+        if (thread_id == 0 && num_raw_points == 1) {
+            float x = raw_points[0];
+            float y = raw_points[1];
+            int center_x = (int)x;
+            int center_y = (int)y;
+            
+            // Draw circle at single point
+            int radius_sq = brush_radius * brush_radius;
+            for (int dy = -brush_radius; dy <= brush_radius; dy++) {
+                for (int dx = -brush_radius; dx <= brush_radius; dx++) {
+                    if (dx * dx + dy * dy <= radius_sq) {
+                        int px = center_x + dx;
+                        int py = center_y + dy;
+                        if (px >= 0 && px < width && py >= 0 && py < height) {
+                            int idx = (py * width + px) * 4;
+                            field[idx] = ch1;
+                            field[idx + 1] = ch2;
+                            field[idx + 2] = ch3;
+                            field[idx + 3] = ch4;
+                        }
+                    }
+                }
+            }
+        }
+        return;
+    }
+    
+    // Calculate total stroke length and number of resampled points
+    float total_length = 0.0f;
+    for (int i = 0; i < num_raw_points - 1; i++) {
+        float dx = raw_points[(i+1)*2] - raw_points[i*2];
+        float dy = raw_points[(i+1)*2+1] - raw_points[i*2+1];
+        total_length += sqrtf(dx * dx + dy * dy);
+    }
+    
+    int num_resampled = (int)(total_length / step_distance) + 1;
+    if (num_resampled <= 0) return;
+    
+    // Each thread handles one resampled point
+    if (thread_id >= num_resampled) return;
+    
+    // Find the resampled point position
+    float target_distance = thread_id * step_distance;
+    float current_distance = 0.0f;
+    
+    float resample_x, resample_y;
+    bool found = false;
+    
+    for (int i = 0; i < num_raw_points - 1 && !found; i++) {
+        float x1 = raw_points[i*2];
+        float y1 = raw_points[i*2+1];
+        float x2 = raw_points[(i+1)*2];
+        float y2 = raw_points[(i+1)*2+1];
+        
+        float dx = x2 - x1;
+        float dy = y2 - y1;
+        float segment_length = sqrtf(dx * dx + dy * dy);
+        
+        if (current_distance + segment_length >= target_distance) {
+            // Target point is in this segment
+            float t = (target_distance - current_distance) / segment_length;
+            resample_x = x1 + dx * t;
+            resample_y = y1 + dy * t;
+            found = true;
+        } else {
+            current_distance += segment_length;
+        }
+    }
+    
+    if (!found) {
+        // Use last point if we didn't find exact distance
+        resample_x = raw_points[(num_raw_points-1)*2];
+        resample_y = raw_points[(num_raw_points-1)*2+1];
+    }
+    
+    // Draw circle at resampled point
+    int center_x = (int)resample_x;
+    int center_y = (int)resample_y;
+    int radius_sq = brush_radius * brush_radius;
+    
+    for (int dy = -brush_radius; dy <= brush_radius; dy++) {
+        for (int dx = -brush_radius; dx <= brush_radius; dx++) {
+            if (dx * dx + dy * dy <= radius_sq) {
+                int px = center_x + dx;
+                int py = center_y + dy;
+                if (px >= 0 && px < width && py >= 0 && py < height) {
+                    int idx = (py * width + px) * 4;
+                    field[idx] = ch1;
+                    field[idx + 1] = ch2;
+                    field[idx + 2] = ch3;
+                    field[idx + 3] = ch4;
+                }
+            }
+        }
+    }
+}
+'''
+
 # Simple unified kernel for all cellular automata rules
 SIMPLE_UNIFIED_KERNEL = r'''
 extern "C" __global__
@@ -170,5 +282,6 @@ void simple_unified_step(unsigned char* current, unsigned char* next,
 def compile_simple_kernels():
     """Compile simplified CUDA kernels."""
     return {
-        'simple_unified_step': cp.RawKernel(SIMPLE_UNIFIED_KERNEL, 'simple_unified_step')
+        'simple_unified_step': cp.RawKernel(SIMPLE_UNIFIED_KERNEL, 'simple_unified_step'),
+        'draw_resampled_stroke': cp.RawKernel(STROKE_KERNEL, 'draw_resampled_stroke')
     }

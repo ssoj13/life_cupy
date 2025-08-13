@@ -295,23 +295,17 @@ class LifeGLWidget(QOpenGLWidget):
         return resampled
     
     def draw_stroke(self):
-        """Draw the complete stroke with resampling."""
+        """Draw the complete stroke using GPU acceleration."""
         if not self.stroke_points or self.current_draw_value is None:
             return
             
-        # If only one point, just draw a circle
-        if len(self.stroke_points) == 1:
-            x, y = self.stroke_points[0]
-            self.engine.draw_circle(int(x), int(y), self.brush_radius, self.current_draw_value)
-        else:
-            # Resample the stroke for consistent spacing
-            resampled_points = self.resample_stroke(self.stroke_points, self.stroke_step_distance)
-            
-            # Draw circles at each resampled point
-            for x, y in resampled_points:
-                int_x, int_y = int(x), int(y)
-                if 0 <= int_x < self.engine.width and 0 <= int_y < self.engine.height:
-                    self.engine.draw_circle(int_x, int_y, self.brush_radius, self.current_draw_value)
+        # Use GPU stroke drawing for better performance
+        self.engine.draw_stroke_gpu(
+            self.stroke_points, 
+            self.stroke_step_distance, 
+            self.brush_radius, 
+            self.current_draw_value
+        )
         
         # Update display after drawing complete stroke
         self.update()
