@@ -175,11 +175,6 @@ void unified_step(const struct Cell* current, struct Cell* next,
             unsigned char alive = birth | survive;
             new_cell.ch1 = alive ? 255 : 0;
             
-            // Basic debug for center area only
-            if (i < 50 && (birth || survive || cell.ch1 > 0)) {
-                printf("CUDA cell %d: ch1=%d->%d, neighbors=%d\n", 
-                       i, cell.ch1, new_cell.ch1, count);
-            }
             
         } else if (rule_type == 1) { // MULTISTATE
             if (rule_id == 0) { // Brian's Brain
@@ -255,7 +250,82 @@ void unified_step(const struct Cell* current, struct Cell* next,
             }
         }
         
+        // Preserve existing non-zero content if simulation didn't produce a result
+        if (new_cell.ch1 == 0 && new_cell.ch2 == 0 && new_cell.ch3 == 0 && new_cell.ch4 == 0) {
+            // If simulation produced empty cell, check if original had drawing content
+            if (cell.ch1 > 0 || cell.ch2 > 0 || cell.ch3 > 0 || cell.ch4 > 0) {
+                // Preserve original drawing content
+                new_cell = cell;
+            }
+        }
+        
         next[i] = new_cell;
+    }
+}
+'''
+
+# Kernel for drawing stroke chains
+DRAW_STROKE_CHAIN_KERNEL = r'''
+struct Cell {
+    unsigned char ch1, ch2, ch3, ch4;
+};
+
+extern "C" __global__
+void draw_stroke_chain(struct Cell* field, const float* points, const int num_points,
+                      const int width, const int height, const float thickness,
+                      const unsigned char val1, const unsigned char val2,
+                      const unsigned char val3, const unsigned char val4) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    int stride = blockDim.x * gridDim.x;
+    
+    float radius = thickness * 0.5f;
+    int total_pixels = width * height;
+    
+    for (int i = idx; i < total_pixels; i += stride) {
+        int x = i % width;
+        int y = i / width;
+        
+        // Check distance to any line segment in the stroke chain
+        bool should_draw = false;
+        
+        for (int seg = 0; seg < num_points - 1; seg++) {
+            float x1 = points[seg * 2];
+            float y1 = points[seg * 2 + 1];
+            float x2 = points[seg * 2 + 2];
+            float y2 = points[seg * 2 + 3];
+            
+            // Distance from point to line segment
+            float dx = x2 - x1;
+            float dy = y2 - y1;
+            float length_sq = dx * dx + dy * dy;
+            
+            if (length_sq < 0.0001f) {
+                // Degenerate line, treat as point
+                float dist = sqrtf((x - x1) * (x - x1) + (y - y1) * (y - y1));
+                if (dist <= radius) {
+                    should_draw = true;
+                    break;
+                }
+            } else {
+                // Project point onto line
+                float t = ((x - x1) * dx + (y - y1) * dy) / length_sq;
+                t = fmaxf(0.0f, fminf(1.0f, t));
+                
+                float proj_x = x1 + t * dx;
+                float proj_y = y1 + t * dy;
+                
+                float dist = sqrtf((x - proj_x) * (x - proj_x) + (y - proj_y) * (y - proj_y));
+                if (dist <= radius) {
+                    should_draw = true;
+                    break;
+                }
+            }
+        }
+        
+        if (should_draw) {
+            struct Cell new_cell = {val1, val2, val3, val4};
+            field[i] = new_cell;
+        }
     }
 }
 '''
@@ -415,6 +485,7 @@ def compile_kernels():
         'unified_step': unified_module.get_function('unified_step'),
         'unified_module': unified_module,  # Keep reference for constant memory access
         'draw_circle': cp.RawKernel(DRAW_CIRCLE_KERNEL, 'draw_circle'),
+        'draw_stroke_chain': cp.RawKernel(DRAW_STROKE_CHAIN_KERNEL, 'draw_stroke_chain'),
         'draw_antialiased_line': cp.RawKernel(ANTIALIASED_LINE_KERNEL, 'draw_antialiased_line'),
         'add_noise': cp.RawKernel(NOISE_KERNEL, 'add_noise'),
         'clear_field': cp.RawKernel(CLEAR_KERNEL, 'clear_field'),

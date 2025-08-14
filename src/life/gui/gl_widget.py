@@ -64,6 +64,17 @@ class LifeGLWidget(QOpenGLWidget):
         glEnable(GL_BLEND)
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
         
+    def __del__(self):
+        """Cleanup OpenGL resources when widget is destroyed."""
+        try:
+            if hasattr(self, 'texture_id') and self.texture_id:
+                self.makeCurrent()
+                glDeleteTextures([self.texture_id])
+                self.texture_id = None
+        except:
+            # Ignore cleanup errors during shutdown
+            pass
+        
     def resizeGL(self, width: int, height: int):
         """Handle widget resize.
         

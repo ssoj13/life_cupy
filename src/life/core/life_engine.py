@@ -52,8 +52,24 @@ class MultiChannelEngine:
         
         self.debug_field_state = debug_field_state.__get__(self, type(self))
         
-        # Compile advanced unified CUDA kernels
-        self.kernels = compile_kernels()
+        # Compile advanced unified CUDA kernels with error checking
+        try:
+            import cupy as cp
+            # Check CUDA availability
+            device_count = cp.cuda.runtime.getDeviceCount()
+            if device_count == 0:
+                raise RuntimeError("No CUDA devices found")
+            
+            # Get device properties
+            device_props = cp.cuda.runtime.getDeviceProperties(0)
+            LOG.info(f"Using CUDA device: {device_props['name'].decode()}")
+            
+            self.kernels = compile_kernels()
+            LOG.info("CUDA kernels compiled successfully")
+            
+        except Exception as e:
+            LOG.error(f"CUDA initialization failed: {e}")
+            raise RuntimeError(f"CUDA initialization failed: {e}. Please ensure NVIDIA GPU with CUDA support is available.")
         
         # Initialize lookup tables for binary rules
         birth_table, survive_table = get_bs_tables()
@@ -86,6 +102,21 @@ class MultiChannelEngine:
         # Calculate grid dimensions for kernels
         self.threads_per_block = Config.THREADS_PER_BLOCK
         self.blocks_per_grid = self._calculate_grid_size(width * height)
+        
+    def __del__(self):
+        """Cleanup GPU resources when engine is destroyed."""
+        try:
+            # Clear references to CuPy arrays to help with cleanup
+            self.buffers = None
+            self.rgba_buffer = None
+            self.clipboards = None
+            # Free CuPy memory pool
+            import cupy as cp
+            mempool = cp.get_default_memory_pool()
+            mempool.free_all_blocks()
+        except:
+            # Ignore cleanup errors during shutdown
+            pass
         
     def _calculate_grid_size(self, total_elements: int) -> int:
         """Calculate optimal grid size for CUDA kernel launch.
@@ -126,12 +157,19 @@ class MultiChannelEngine:
             blocks = self._calculate_grid_size(self.width * self.height)
             seed = int(time.time() * 1000) % (2**32)  # Random seed for multichannel rules
             
-            self.kernels['unified_step'](
-                (blocks,), (self.threads_per_block,),
-                (current.ravel(), next_buffer.ravel(), 
-                 self.width, self.height, 
-                 int(self.rule_type), int(self.rule_id), seed)
-            )
+            try:
+                self.kernels['unified_step'](
+                    (blocks,), (self.threads_per_block,),
+                    (current.ravel(), next_buffer.ravel(), 
+                     self.width, self.height, 
+                     int(self.rule_type), int(self.rule_id), seed)
+                )
+                # Ensure kernel completion
+                cp.cuda.runtime.deviceSynchronize()
+                
+            except cp.cuda.runtime.CudaRuntimeError as e:
+                LOG.error(f"CUDA kernel execution failed: {e}")
+                raise RuntimeError(f"Simulation step failed: {e}")
             
             # Swap buffers
             self.current_buffer = 1 - self.current_buffer
@@ -334,26 +372,35 @@ class MultiChannelEngine:
         self.kernels['add_noise'](
             (blocks,), (self.threads_per_block,),
             (self.buffers[self.current_buffer].ravel(),
-             x, y, width, height,
-             int(density * 10000),  # Convert to integer probability out of 10000
-             seed, int(self.rule_type),
-             self.width, self.height)
+             self.width, self.height,
+             density,  # Keep as float
+             seed, int(self.rule_type))
         )
     
     def get_rgba_array(self) -> cp.ndarray:
         """Get current field as RGBA array for display.
         
-        Unified RGBA system - field is already RGBA, just apply display mode filtering.
+        Converts field data to proper RGBA based on rule type and display mode.
         
         Returns:
             RGBA array suitable for OpenGL texture
         """
         current = self.buffers[self.current_buffer]
         
-        if self.display_mode == 0:  # RGB display - direct RGBA passthrough
-                return current
-                
-        elif self.display_mode == 1:  # Money as brightness
+        # Use CUDA kernel to convert field to proper RGBA based on rule type and display mode
+        total_pixels = self.width * self.height
+        blocks = self._calculate_grid_size(total_pixels)
+        
+        self.kernels['field_to_rgba'](
+            (blocks,), (self.threads_per_block,),
+            (current.ravel(), self.rgba_buffer.ravel(),
+             total_pixels, int(self.rule_type), int(self.display_mode))
+        )
+        
+        return self.rgba_buffer
+        
+        # Old unused code below for reference
+        if False and self.display_mode == 1:  # Money as brightness
             avg = (current[:, :, 0] + current[:, :, 1] + current[:, :, 2]) // 3
             brightness = (avg * current[:, :, 3]) // 255
             self.rgba_buffer[:, :, 0] = brightness
