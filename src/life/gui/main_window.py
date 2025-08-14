@@ -440,6 +440,20 @@ class MainWindow(QMainWindow):
         ctrl_clear_action.triggered.connect(self.clear_field)
         self.addAction(ctrl_clear_action)
         
+        # Ctrl+1-4 for saving to clipboard slots
+        for i in range(1, 5):
+            save_action = QAction(self)
+            save_action.setShortcut(QKeySequence(f"Ctrl+{i}"))
+            save_action.triggered.connect(lambda checked, slot=i-1: self.save_to_clipboard(slot))
+            self.addAction(save_action)
+        
+        # 1-4 for loading from clipboard slots and setting as reset image
+        for i in range(1, 5):
+            load_action = QAction(self)
+            load_action.setShortcut(QKeySequence(str(i)))
+            load_action.triggered.connect(lambda checked, slot=i-1: self.load_and_set_reset(slot))
+            self.addAction(load_action)
+        
         # H for home (reset viewport)
         home_action = QAction(self)
         home_action.setShortcut(QKeySequence(Qt.Key_H))
@@ -666,7 +680,9 @@ class MainWindow(QMainWindow):
         Args:
             slot: Clipboard slot number (0-3)
         """
+        LOG.info(f"Ctrl+{slot + 1} pressed - saving to clipboard slot {slot}")
         self.gl_widget.engine.save_to_clipboard(slot)
+        LOG.info(f"Field saved to clipboard slot {slot + 1}")
         self.status_bar.showMessage(f"Field saved to clipboard slot {slot + 1}", 2000)
         
     def load_from_clipboard(self, slot: int):
@@ -675,9 +691,33 @@ class MainWindow(QMainWindow):
         Args:
             slot: Clipboard slot number (0-3)
         """
+        LOG.info(f"Loading from clipboard slot {slot + 1}")
         self.gl_widget.engine.load_from_clipboard(slot)
         self.gl_widget.update()
+        LOG.info(f"Field loaded from clipboard slot {slot + 1}")
         self.status_bar.showMessage(f"Field loaded from clipboard slot {slot + 1}", 2000)
+    
+    def load_and_set_reset(self, slot: int):
+        """Load field state from clipboard slot and set it as the reset image.
+        
+        Args:
+            slot: Clipboard slot number (0-3)
+        """
+        LOG.info(f"{slot + 1} pressed - loading from clipboard slot {slot}")
+        
+        # Load from clipboard
+        self.gl_widget.engine.load_from_clipboard(slot)
+        
+        # Set the current field as the stored/reset field
+        current_field = self.gl_widget.engine.get_field_cpu()
+        self.stored_field = current_field.copy()
+        
+        # Reset generation counter
+        self.gl_widget.engine.generation = 0
+        self.gl_widget.update()
+        
+        LOG.info(f"Field loaded from slot {slot + 1} and set as reset image")
+        self.status_bar.showMessage(f"Field loaded from slot {slot + 1} and set as reset image", 2000)
     
     def restore_stored_field(self):
         """Restore the stored field manually."""

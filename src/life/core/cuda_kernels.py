@@ -54,6 +54,76 @@ struct Cell {
 };
 '''
 
+# Anti-aliased line segment kernel
+ANTIALIASED_LINE_KERNEL = r'''
+extern "C" __global__
+void draw_antialiased_line(unsigned char* field,
+                          const float x1, const float y1,
+                          const float x2, const float y2,
+                          const float thickness,
+                          const unsigned char ch1, const unsigned char ch2,
+                          const unsigned char ch3, const unsigned char ch4,
+                          const int width, const int height) {
+    
+    int thread_id = blockIdx.x * blockDim.x + threadIdx.x;
+    
+    // Calculate bounding box for the line
+    float radius = thickness * 0.5f;
+    int min_x = max(0, (int)floorf(fminf(x1, x2) - radius - 1));
+    int max_x = min(width - 1, (int)ceilf(fmaxf(x1, x2) + radius + 1));
+    int min_y = max(0, (int)floorf(fminf(y1, y2) - radius - 1));
+    int max_y = min(height - 1, (int)ceilf(fmaxf(y1, y2) + radius + 1));
+    
+    int total_pixels = (max_x - min_x + 1) * (max_y - min_y + 1);
+    if (thread_id >= total_pixels) return;
+    
+    // Convert thread ID to pixel coordinates
+    int box_width = max_x - min_x + 1;
+    int local_x = thread_id % box_width;
+    int local_y = thread_id / box_width;
+    int pixel_x = min_x + local_x;
+    int pixel_y = min_y + local_y;
+    
+    // Calculate distance from pixel to line segment
+    float dx = x2 - x1;
+    float dy = y2 - y1;
+    float length_sq = dx * dx + dy * dy;
+    
+    float distance;
+    if (length_sq < 0.0001f) {
+        // Point line - distance to point
+        float px = pixel_x + 0.5f - x1;
+        float py = pixel_y + 0.5f - y1;
+        distance = sqrtf(px * px + py * py);
+    } else {
+        // Line segment - distance to closest point on line
+        float px = pixel_x + 0.5f - x1;
+        float py = pixel_y + 0.5f - y1;
+        float t = fmaxf(0.0f, fminf(1.0f, (px * dx + py * dy) / length_sq));
+        float closest_x = x1 + t * dx;
+        float closest_y = y1 + t * dy;
+        float dist_x = pixel_x + 0.5f - closest_x;
+        float dist_y = pixel_y + 0.5f - closest_y;
+        distance = sqrtf(dist_x * dist_x + dist_y * dist_y);
+    }
+    
+    // Anti-aliased coverage calculation
+    float coverage = 1.0f - fmaxf(0.0f, fminf(1.0f, distance - radius + 0.5f));
+    if (coverage > 0.0f) {
+        int idx = (pixel_y * width + pixel_x) * 4;
+        
+        // Alpha blending with coverage
+        float alpha = coverage;
+        float inv_alpha = 1.0f - alpha;
+        
+        field[idx] = (unsigned char)(ch1 * alpha + field[idx] * inv_alpha);
+        field[idx + 1] = (unsigned char)(ch2 * alpha + field[idx + 1] * inv_alpha);
+        field[idx + 2] = (unsigned char)(ch3 * alpha + field[idx + 2] * inv_alpha);
+        field[idx + 3] = (unsigned char)(ch4 * alpha + field[idx + 3] * inv_alpha);
+    }
+}
+'''
+
 
 # Unified multi-channel cellular automata kernel
 UNIFIED_KERNEL = r'''
@@ -192,11 +262,13 @@ struct Cell {
 extern "C" __global__
 void draw_circle(struct Cell* field, const int width, const int height,
                  const int center_x, const int center_y, const int radius,
-                 const struct Cell value) {
+                 const unsigned char val_ch1, const unsigned char val_ch2,
+                 const unsigned char val_ch3, const unsigned char val_ch4) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     int stride = blockDim.x * gridDim.x;
     
     int radius_sq = radius * radius;
+    struct Cell value = {val_ch1, val_ch2, val_ch3, val_ch4};
     
     for (int i = idx; i < width * height; i += stride) {
         int x = i % width;
@@ -336,6 +408,7 @@ def compile_kernels():
         'unified_step': unified_module.get_function('unified_step'),
         'unified_module': unified_module,  # Keep reference for constant memory access
         'draw_circle': cp.RawKernel(DRAW_CIRCLE_KERNEL, 'draw_circle'),
+        'draw_antialiased_line': cp.RawKernel(ANTIALIASED_LINE_KERNEL, 'draw_antialiased_line'),
         'add_noise': cp.RawKernel(NOISE_KERNEL, 'add_noise'),
         'clear_field': cp.RawKernel(CLEAR_KERNEL, 'clear_field'),
         'field_to_rgba': cp.RawKernel(FIELD_TO_RGBA_KERNEL, 'field_to_rgba')

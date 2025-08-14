@@ -5,8 +5,7 @@ from typing import Tuple, Optional
 import math
 import time
 
-from .cuda_kernels import (RuleType, BinaryRule, MultiStateRule, MultiChannelRule, get_bs_tables)
-from .simple_kernels import compile_simple_kernels
+from .cuda_kernels import (RuleType, BinaryRule, MultiStateRule, MultiChannelRule, get_bs_tables, compile_kernels)
 from ..utils.config import Config
 
 
@@ -31,8 +30,19 @@ class MultiChannelEngine:
         self.rule_id = BinaryRule.CONWAY_LIFE
         self.display_mode = 0  # 0=RGB, 1=Money as brightness
         
-        # Compile simplified CUDA kernels
-        self.kernels = compile_simple_kernels()
+        # Compile advanced unified CUDA kernels
+        self.kernels = compile_kernels()
+        
+        # Initialize lookup tables for binary rules
+        birth_table, survive_table = get_bs_tables()
+        birth_ptr = self.kernels['unified_module'].get_global('birth_table')
+        survive_ptr = self.kernels['unified_module'].get_global('survive_table')
+        
+        # Convert to cupy arrays and copy to GPU constant memory
+        birth_gpu = cp.asarray(birth_table.ravel())
+        survive_gpu = cp.asarray(survive_table.ravel())
+        birth_ptr.copy_from(birth_gpu.data.ptr, birth_table.nbytes)
+        survive_ptr.copy_from(survive_gpu.data.ptr, survive_table.nbytes)
         
         # Initialize double buffer for simulation (unified RGBA arrays)
         self.current_buffer = 0
@@ -88,13 +98,15 @@ class MultiChannelEngine:
             current = self.buffers[self.current_buffer]
             next_buffer = self.buffers[1 - self.current_buffer]
             
-            # Launch simplified unified kernel
+            # Launch unified kernel
             blocks = self._calculate_grid_size(self.width * self.height)
-            self.kernels['simple_unified_step'](
+            seed = int(time.time() * 1000) % (2**32)  # Random seed for multichannel rules
+            
+            self.kernels['unified_step'](
                 (blocks,), (self.threads_per_block,),
                 (current.ravel(), next_buffer.ravel(), 
                  self.width, self.height, 
-                 int(self.rule_type), int(self.rule_id))
+                 int(self.rule_type), int(self.rule_id), seed)
             )
             
             # Swap buffers
@@ -111,7 +123,7 @@ class MultiChannelEngine:
         self.current_buffer = 0
     
     def draw_circle(self, x: int, y: int, radius: int, value: Tuple[int, int, int, int] = (255, 0, 0, 0)) -> None:
-        """Draw a filled circle on the field.
+        """Draw a filled circle on the field using GPU kernel.
         
         Args:
             x: Center X coordinate
@@ -119,18 +131,32 @@ class MultiChannelEngine:
             radius: Circle radius in cells
             value: 4-channel values (ch1, ch2, ch3, ch4)
         """
-        # Simple CPU-based circle drawing for now
-        radius_sq = radius * radius
-        for dy in range(-radius, radius + 1):
-            for dx in range(-radius, radius + 1):
-                if dx * dx + dy * dy <= radius_sq:
-                    px = x + dx
-                    py = y + dy
-                    if 0 <= px < self.width and 0 <= py < self.height:
-                        self.buffers[self.current_buffer][py, px, 0] = value[0]
-                        self.buffers[self.current_buffer][py, px, 1] = value[1]
-                        self.buffers[self.current_buffer][py, px, 2] = value[2]
-                        self.buffers[self.current_buffer][py, px, 3] = value[3]
+        if not (0 <= x < self.width and 0 <= y < self.height):
+            return
+            
+        # Calculate number of threads needed (bounding box area)
+        min_x = max(0, x - radius)
+        max_x = min(self.width - 1, x + radius)
+        min_y = max(0, y - radius)
+        max_y = min(self.height - 1, y + radius)
+        
+        total_pixels = (max_x - min_x + 1) * (max_y - min_y + 1)
+        if total_pixels <= 0:
+            return
+            
+        blocks = self._calculate_grid_size(total_pixels)
+        
+        # Call simplified draw circle kernel with individual values
+        total_cells = self.width * self.height
+        blocks = self._calculate_grid_size(total_cells)
+        
+        self.kernels['draw_circle'](
+            (blocks,), (self.threads_per_block,),
+            (self.buffers[self.current_buffer].ravel(), 
+             self.width, self.height, x, y, radius,
+             cp.uint8(value[0]), cp.uint8(value[1]), 
+             cp.uint8(value[2]), cp.uint8(value[3]))
+        )
     
     def draw_line_segment(self, x1: float, y1: float, x2: float, y2: float, 
                          thickness: float, value: Tuple[int, int, int, int] = (255, 0, 0, 0)) -> None:
@@ -255,44 +281,41 @@ class MultiChannelEngine:
         threads_per_block = min(256, total_pixels)
         blocks = max(1, (total_pixels + threads_per_block - 1) // threads_per_block)
         
-        self.kernels['draw_immediate_circle'](
+        self.kernels['draw_circle'](
             (blocks,), (threads_per_block,),
-            (self.buffers[self.current_buffer].ravel(),  # field
-             cp.int32(x),                                # center_x
-             cp.int32(y),                                # center_y
-             cp.int32(radius),                           # radius
-             cp.uint8(value[0]),                         # ch1
-             cp.uint8(value[1]),                         # ch2
-             cp.uint8(value[2]),                         # ch3
-             cp.uint8(value[3]),                         # ch4
-             cp.int32(self.width),                       # width
-             cp.int32(self.height))                      # height
+            (self.buffers[self.current_buffer].ravel(), 
+             self.width, self.height, x, y, radius,
+             cp.uint8(value[0]), cp.uint8(value[1]), 
+             cp.uint8(value[2]), cp.uint8(value[3]))
         )
     
     def add_noise(self, density: float = 0.3, region: Optional[Tuple[int, int, int, int]] = None) -> None:
-        """Add random noise pattern to the field.
+        """Add random noise pattern to the field using GPU kernel.
         
         Args:
             density: Probability of cell being affected (0.0 to 1.0)
             region: Optional (x, y, width, height) to limit noise to region
         """
-        current = self.buffers[self.current_buffer]
+        # Set region to full field if not specified
+        if region is None:
+            region = (0, 0, self.width, self.height)
         
-        # Simple CPU-based noise generation
-        if self.rule_type == 0 or self.rule_type == 1:  # Binary or multistate
-            # Random binary noise
-            noise = cp.random.random((self.height, self.width)) < density
-            current[:, :, 0] = cp.where(noise, 255, current[:, :, 0])
-            current[:, :, 1] = 0
-            current[:, :, 2] = 0
-            current[:, :, 3] = 0
-        else:  # Multichannel
-            # Random values for all channels
-            noise_mask = cp.random.random((self.height, self.width)) < density
-            current[:, :, 0] = cp.where(noise_mask, cp.random.randint(150, 256, (self.height, self.width)), current[:, :, 0])
-            current[:, :, 1] = cp.where(noise_mask, cp.random.randint(150, 256, (self.height, self.width)), current[:, :, 1])
-            current[:, :, 2] = cp.where(noise_mask, cp.random.randint(150, 256, (self.height, self.width)), current[:, :, 2])
-            current[:, :, 3] = cp.where(noise_mask, cp.random.randint(100, 201, (self.height, self.width)), current[:, :, 3])
+        x, y, width, height = region
+        total_pixels = width * height
+        if total_pixels <= 0:
+            return
+            
+        blocks = self._calculate_grid_size(total_pixels)
+        seed = int(time.time() * 1000) % (2**32)
+        
+        self.kernels['add_noise'](
+            (blocks,), (self.threads_per_block,),
+            (self.buffers[self.current_buffer].ravel(),
+             x, y, width, height,
+             int(density * 10000),  # Convert to integer probability out of 10000
+             seed, int(self.rule_type),
+             self.width, self.height)
+        )
     
     def get_rgba_array(self) -> cp.ndarray:
         """Get current field as RGBA array for display.
