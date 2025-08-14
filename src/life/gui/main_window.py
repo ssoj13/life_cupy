@@ -3,7 +3,7 @@ from PySide6.QtWidgets import (QMainWindow, QToolBar, QWidget, QVBoxLayout,
                               QHBoxLayout, QPushButton, QLabel, QSlider,
                               QSpinBox, QGroupBox, QDockWidget, QStatusBar, QComboBox,
                               QColorDialog, QFrame, QCheckBox, QMenuBar, QFileDialog,
-                              QMessageBox)
+                              QMessageBox, QGridLayout)
 from PySide6.QtCore import Qt, QTimer, QSettings
 from PySide6.QtGui import QAction, QKeySequence, QColor, QPixmap, QImage
 from pathlib import Path
@@ -18,6 +18,7 @@ handler.setFormatter(logging.Formatter('%(levelname)s: %(message)s'))
 LOG.addHandler(handler)
 
 from .gl_widget import LifeGLWidget
+from .button2 import Button2
 from ..utils.config import Config
 from ..core import RuleType, BinaryRule, MultiStateRule, MultiChannelRule, ExtendedClassicRule
 
@@ -65,6 +66,9 @@ class MainWindow(QMainWindow):
         # Store field for reset functionality
         self.stored_field = None
         
+        # Clipboard storage (4 slots)
+        self.clipboard_slots = [None, None, None, None]
+        
         # Create UI elements
         self.create_menu_bar()
         self.create_toolbar()
@@ -78,104 +82,126 @@ class MainWindow(QMainWindow):
         toolbar.setMovable(False)
         self.addToolBar(toolbar)
         
-        # Play/Pause button
-        self.play_pause_action = QAction("▶ Play", self)
-        self.play_pause_action.triggered.connect(self.toggle_simulation)
-        toolbar.addAction(self.play_pause_action)
+        # Create central widget for toolbar with grid layout
+        toolbar_widget = QWidget()
+        layout = QGridLayout(toolbar_widget)
+        layout.setSpacing(10)
+        layout.setContentsMargins(5, 2, 5, 2)
         
-        # Step button
-        step_action = QAction("⏭ Step", self)
-        step_action.triggered.connect(self.step_simulation)
-        toolbar.addAction(step_action)
+        col = 0
+        
+        # Buttons section
+        buttons_frame = QFrame()
+        buttons_frame.setFrameStyle(QFrame.Box | QFrame.Raised)
+        buttons_layout = QHBoxLayout(buttons_frame)
+        buttons_layout.setContentsMargins(5, 2, 5, 2)
+        
+        # Start/Pause button
+        self.play_pause_btn = QPushButton("▶ Play")
+        self.play_pause_btn.clicked.connect(self.toggle_simulation)
+        buttons_layout.addWidget(self.play_pause_btn)
+        
+        # Pause button (separate for clarity)
+        self.pause_btn = QPushButton("⏸ Pause")
+        self.pause_btn.clicked.connect(self.pause_simulation)
+        self.pause_btn.setVisible(False)
+        buttons_layout.addWidget(self.pause_btn)
         
         # Reset button
-        reset_action = QAction("⏹ Reset", self)
-        reset_action.triggered.connect(self.reset_simulation)
-        toolbar.addAction(reset_action)
+        reset_btn = QPushButton("⏹ Reset")
+        reset_btn.clicked.connect(self.reset_simulation)
+        buttons_layout.addWidget(reset_btn)
         
-        toolbar.addSeparator()
+        # Step button
+        step_btn = QPushButton("⏭ Step")
+        step_btn.clicked.connect(self.step_simulation)
+        buttons_layout.addWidget(step_btn)
         
-        # Rule selection combobox
-        toolbar.addWidget(QLabel("Rule:"))
+        layout.addWidget(QLabel("Controls:"), 0, col)
+        layout.addWidget(buttons_frame, 1, col)
+        col += 1
+        
+        # Algo section
+        algo_frame = QFrame()
+        algo_frame.setFrameStyle(QFrame.Box | QFrame.Raised)
+        algo_layout = QVBoxLayout(algo_frame)
+        algo_layout.setContentsMargins(5, 2, 5, 2)
+        
         self.rule_combobox = QComboBox()
+        self.rule_combobox.setMinimumWidth(200)
         self.setup_rule_combobox()
         self.rule_combobox.currentTextChanged.connect(self.change_rule)
-        toolbar.addWidget(self.rule_combobox)
+        algo_layout.addWidget(self.rule_combobox)
         
-        toolbar.addSeparator()
+        layout.addWidget(QLabel("Algorithm:"), 0, col)
+        layout.addWidget(algo_frame, 1, col)
+        col += 1
         
-        # Remove generation counter from toolbar - moved to status bar
+        # Draw section
+        draw_frame = QFrame()
+        draw_frame.setFrameStyle(QFrame.Box | QFrame.Raised)
+        draw_layout = QHBoxLayout(draw_frame)
+        draw_layout.setContentsMargins(5, 2, 5, 2)
         
-        toolbar.addSeparator()
+        # Brush size
+        draw_layout.addWidget(QLabel("Size:"))
+        self.brush_size_slider = QSlider(Qt.Horizontal)
+        self.brush_size_slider.setRange(1, 100)
+        self.brush_size_slider.setValue(self.saved_brush_size)
+        self.brush_size_slider.setMaximumWidth(100)
+        self.brush_size_slider.valueChanged.connect(self.update_brush_radius_toolbar)
+        draw_layout.addWidget(self.brush_size_slider)
         
-        # Speed control
-        toolbar.addWidget(QLabel("Speed:"))
-        self.speed_slider = QSlider(Qt.Horizontal)
-        self.speed_slider.setRange(1, Config.MAX_STEPS_PER_FRAME)
-        self.speed_slider.setValue(Config.DEFAULT_STEPS_PER_FRAME)
-        self.speed_slider.setMaximumWidth(100)
-        self.speed_slider.valueChanged.connect(self.update_simulation_speed)
-        toolbar.addWidget(self.speed_slider)
+        self.brush_size_label = QLabel(str(self.saved_brush_size))
+        self.brush_size_label.setMinimumWidth(30)
+        draw_layout.addWidget(self.brush_size_label)
         
-        self.speed_label = QLabel(f"{Config.DEFAULT_STEPS_PER_FRAME}")
-        self.speed_label.setMinimumWidth(20)
-        toolbar.addWidget(self.speed_label)
-        
-        toolbar.addSeparator()
-        
-        # Drawing tools
-        noise_action = QAction("🎲 Add Noise", self)
-        noise_action.triggered.connect(self.add_noise)
-        toolbar.addAction(noise_action)
-        
-        glider_action = QAction("🚀 Add Glider", self)
-        glider_action.triggered.connect(self.add_glider)
-        toolbar.addAction(glider_action)
-        
-        clear_action = QAction("🗑 Clear", self)
-        clear_action.triggered.connect(self.clear_field)
-        toolbar.addAction(clear_action)
-        
-        toolbar.addSeparator()
-        
-        # Color picker for painting
-        toolbar.addWidget(QLabel("Color:"))
+        # Color swatch
+        draw_layout.addWidget(QLabel("Color:"))
         self.color_button = QPushButton()
-        self.color_button.setMaximumSize(30, 25)
+        self.color_button.setFixedSize(30, 25)
         self.color_button.clicked.connect(self.open_color_picker)
         self.update_color_button()
-        toolbar.addWidget(self.color_button)
+        draw_layout.addWidget(self.color_button)
         
-        toolbar.addSeparator()
+        layout.addWidget(QLabel("Draw Tools:"), 0, col)
+        layout.addWidget(draw_frame, 1, col)
+        col += 1
         
-        # Stored field restore button
-        stored_action = QAction("📁 Stored", self)
-        stored_action.setToolTip("Restore stored field")
-        stored_action.triggered.connect(self.restore_stored_field)
-        toolbar.addAction(stored_action)
+        # Clipboard section
+        clipboard_frame = QFrame()
+        clipboard_frame.setFrameStyle(QFrame.Box | QFrame.Raised)
+        clipboard_layout = QHBoxLayout(clipboard_frame)
+        clipboard_layout.setContentsMargins(5, 2, 5, 2)
         
-        toolbar.addSeparator()
-        
-        # Clipboard buttons - grouped save/load pairs
+        self.clipboard_buttons = []
         for i in range(4):
-            # Add a small separator frame between groups
             if i > 0:
+                # Small separator between clipboard slots
                 separator = QFrame()
                 separator.setFrameStyle(QFrame.VLine | QFrame.Sunken)
                 separator.setMaximumWidth(2)
-                toolbar.addWidget(separator)
+                clipboard_layout.addWidget(separator)
             
-            # Save button
-            save_action = QAction(f"S{i+1}", self)
-            save_action.setToolTip(f"Save to slot {i+1}")
-            save_action.triggered.connect(lambda checked, slot=i: self.save_to_clipboard(slot))
-            toolbar.addAction(save_action)
-            
-            # Load button (right next to save)
-            load_action = QAction(f"L{i+1}", self)
-            load_action.setToolTip(f"Load from slot {i+1}")
-            load_action.triggered.connect(lambda checked, slot=i: self.load_from_clipboard(slot))
-            toolbar.addAction(load_action)
+            # Create Button2 for each clipboard slot
+            btn = Button2(f"Clip {i+1}")
+            btn.setToolTip(f"Left click: Save to slot {i+1}\\nRight click: Load from slot {i+1}")
+            btn.left_clicked.connect(lambda slot=i: self.save_to_clipboard(slot))
+            btn.right_clicked.connect(lambda slot=i: self.load_from_clipboard(slot))
+            clipboard_layout.addWidget(btn)
+            self.clipboard_buttons.append(btn)
+        
+        layout.addWidget(QLabel("Clipboards:"), 0, col)
+        layout.addWidget(clipboard_frame, 1, col)
+        col += 1
+        
+        # Set column stretches for proportional sizing
+        layout.setColumnStretch(0, 2)  # Buttons section
+        layout.setColumnStretch(1, 3)  # Algo section
+        layout.setColumnStretch(2, 2)  # Draw section
+        layout.setColumnStretch(3, 3)  # Clipboard section
+        
+        toolbar.addWidget(toolbar_widget)
         
     def create_dock_widget(self):
         """Create dock widget with drawing tool controls."""
@@ -487,18 +513,28 @@ class MainWindow(QMainWindow):
     def toggle_simulation(self):
         """Toggle simulation play/pause."""
         if self.is_playing:
-            self.gl_widget.stop_simulation()
-            self.play_pause_action.setText("▶ Play")
-            self.is_playing = False
+            self.pause_simulation()
         else:
+            self.start_simulation()
+    
+    def start_simulation(self):
+        """Start the simulation."""
+        if not self.is_playing:
             # Store field when starting simulation from generation 0
             if self.gl_widget.engine.generation == 0:
                 self.stored_field = self.gl_widget.engine.get_field_cpu().copy()
                 self.status_bar.showMessage("Field stored for reset", 1500)
             
             self.gl_widget.start_simulation()
-            self.play_pause_action.setText("⏸ Pause")
+            self.play_pause_btn.setText("⏸ Pause")
             self.is_playing = True
+    
+    def pause_simulation(self):
+        """Pause the simulation."""
+        if self.is_playing:
+            self.gl_widget.stop_simulation()
+            self.play_pause_btn.setText("▶ Play")
+            self.is_playing = False
             
     def step_simulation(self):
         """Perform single simulation step."""
@@ -526,7 +562,7 @@ class MainWindow(QMainWindow):
     def reset_simulation(self):
         """Reset the simulation."""
         self.gl_widget.reset_simulation()
-        self.play_pause_action.setText("▶ Play")
+        self.play_pause_btn.setText("▶ Play")
         self.is_playing = False
         
         # Restore stored field if available
@@ -591,12 +627,27 @@ class MainWindow(QMainWindow):
         self.speed_label.setText(str(value))
         
     def update_brush_radius(self, value: int):
-        """Update brush radius.
+        """Update brush radius from dock widget.
         
         Args:
             value: New brush radius
         """
         self.gl_widget.set_brush_radius(value)
+        self.radius_label.setText(str(value))
+        # Also update toolbar slider
+        self.brush_size_slider.setValue(value)
+        self.brush_size_label.setText(str(value))
+    
+    def update_brush_radius_toolbar(self, value: int):
+        """Update brush radius from toolbar.
+        
+        Args:
+            value: New brush radius
+        """
+        self.gl_widget.set_brush_radius(value)
+        self.brush_size_label.setText(str(value))
+        # Also update dock widget slider
+        self.radius_slider.setValue(value)
         self.radius_label.setText(str(value))
     
 # Removed toggle method - now always immediate mode
@@ -680,8 +731,14 @@ class MainWindow(QMainWindow):
         Args:
             slot: Clipboard slot number (0-3)
         """
-        LOG.info(f"Ctrl+{slot + 1} pressed - saving to clipboard slot {slot}")
-        self.gl_widget.engine.save_to_clipboard(slot)
+        LOG.info(f"Saving to clipboard slot {slot + 1}")
+        # Get current field and store in memory
+        current_field = self.gl_widget.engine.get_field_cpu().copy()
+        self.clipboard_slots[slot] = current_field
+        
+        # Update button appearance to show it has data
+        self.clipboard_buttons[slot].setStyleSheet("font-weight: bold; background-color: #d0ffd0;")
+        
         LOG.info(f"Field saved to clipboard slot {slot + 1}")
         self.status_bar.showMessage(f"Field saved to clipboard slot {slot + 1}", 2000)
         
@@ -692,10 +749,41 @@ class MainWindow(QMainWindow):
             slot: Clipboard slot number (0-3)
         """
         LOG.info(f"Loading from clipboard slot {slot + 1}")
-        self.gl_widget.engine.load_from_clipboard(slot)
-        self.gl_widget.update()
-        LOG.info(f"Field loaded from clipboard slot {slot + 1}")
-        self.status_bar.showMessage(f"Field loaded from clipboard slot {slot + 1}", 2000)
+        
+        if self.clipboard_slots[slot] is not None:
+            stored_field = self.clipboard_slots[slot]
+            
+            # Get current field dimensions
+            current_width = self.gl_widget.engine.width
+            current_height = self.gl_widget.engine.height
+            
+            # Resize if needed
+            if stored_field.shape[1] != current_width or stored_field.shape[0] != current_height:
+                # Scale the stored field to current size
+                from PySide6.QtGui import QImage
+                
+                # Convert numpy array to QImage for scaling
+                height, width, channels = stored_field.shape
+                qimg = QImage(stored_field.data, width, height, QImage.Format_RGBA8888)
+                
+                # Scale to current field size
+                qimg = qimg.scaled(current_width, current_height, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
+                
+                # Convert back to numpy array
+                ptr = qimg.constBits()
+                stored_field = np.array(ptr).reshape(current_height, current_width, 4)
+            
+            # Set the field and make it the reset image
+            self.gl_widget.engine.set_field(stored_field)
+            self.stored_field = stored_field.copy()
+            self.gl_widget.engine.generation = 0
+            self.gl_widget.update()
+            self.update_generation_display(0)
+            
+            LOG.info(f"Field loaded from clipboard slot {slot + 1} and set as reset image")
+            self.status_bar.showMessage(f"Field loaded from slot {slot + 1} and set as reset image", 2000)
+        else:
+            self.status_bar.showMessage(f"Clipboard slot {slot + 1} is empty", 1500)
     
     def load_and_set_reset(self, slot: int):
         """Load field state from clipboard slot and set it as the reset image.
@@ -705,19 +793,8 @@ class MainWindow(QMainWindow):
         """
         LOG.info(f"{slot + 1} pressed - loading from clipboard slot {slot}")
         
-        # Load from clipboard
-        self.gl_widget.engine.load_from_clipboard(slot)
-        
-        # Set the current field as the stored/reset field
-        current_field = self.gl_widget.engine.get_field_cpu()
-        self.stored_field = current_field.copy()
-        
-        # Reset generation counter
-        self.gl_widget.engine.generation = 0
-        self.gl_widget.update()
-        
-        LOG.info(f"Field loaded from slot {slot + 1} and set as reset image")
-        self.status_bar.showMessage(f"Field loaded from slot {slot + 1} and set as reset image", 2000)
+        # Just call load_from_clipboard which already sets as reset image
+        self.load_from_clipboard(slot)
     
     def restore_stored_field(self):
         """Restore the stored field manually."""
@@ -743,17 +820,17 @@ class MainWindow(QMainWindow):
     
     def decrease_brush_size(self):
         """Decrease brush size by 10% ([ key)."""
-        current_size = self.radius_slider.value()
+        current_size = self.brush_size_slider.value()
         new_size = max(1, int(current_size * 0.9))  # Decrease by 10%, minimum 1
-        self.radius_slider.setValue(new_size)
-        # update_brush_radius will be called automatically by slider valueChanged signal
+        self.brush_size_slider.setValue(new_size)
+        # update_brush_radius_toolbar will be called automatically by slider valueChanged signal
     
     def increase_brush_size(self):
         """Increase brush size by 10% (] key)."""
-        current_size = self.radius_slider.value()
+        current_size = self.brush_size_slider.value()
         new_size = min(100, int(current_size * 1.1) + 1)  # Increase by 10%+1, maximum 100
-        self.radius_slider.setValue(new_size)
-        # update_brush_radius will be called automatically by slider valueChanged signal
+        self.brush_size_slider.setValue(new_size)
+        # update_brush_radius_toolbar will be called automatically by slider valueChanged signal
     
     def open_color_picker(self):
         """Open color picker dialog for painting."""
@@ -1009,7 +1086,7 @@ class MainWindow(QMainWindow):
         self.settings.setValue('paint_color', [color.red(), color.green(), color.blue()])
         
         # Save brush size
-        self.settings.setValue('brush_size', self.radius_slider.value())
+        self.settings.setValue('brush_size', self.brush_size_slider.value())
         
         # Save last folder
         self.settings.setValue('last_folder', self.last_folder)

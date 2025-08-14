@@ -169,11 +169,70 @@ void unified_step(const struct Cell* current, struct Cell* next,
                 }
             }
             
-            // Apply binary B/S rule - DEBUG VERSION
-            unsigned char birth = birth_table[rule_id * 9 + count];
-            unsigned char survive = survive_table[rule_id * 9 + count] & (cell.ch1 > 0);
-            unsigned char alive = birth | survive;
-            new_cell.ch1 = alive ? 255 : 0;
+            // Apply binary B/S rule
+            if (rule_id == 10) { // GRADUAL_CONWAY
+                // Gradual Conway: cells grow/decay by 10% (25 units)
+                unsigned char birth = birth_table[0 * 9 + count]; // Use Conway rules
+                unsigned char survive = survive_table[0 * 9 + count];
+                
+                if (cell.ch1 < 64) { // Dead cell
+                    if (birth && count == 3) {
+                        new_cell.ch1 = min(255, cell.ch1 + 25); // Grow by 10%
+                    } else {
+                        new_cell.ch1 = max(0, (int)cell.ch1 - 25); // Decay by 10%
+                    }
+                } else { // Alive cell
+                    if (survive && (count == 2 || count == 3)) {
+                        new_cell.ch1 = min(255, cell.ch1 + 25); // Strengthen by 10%
+                    } else {
+                        new_cell.ch1 = max(0, (int)cell.ch1 - 25); // Weaken by 10%
+                    }
+                }
+            } else if (rule_id == 11) { // CLASSIC_CONWAY
+                // Classic Conway B3/S23 on all 4 RGBA channels independently
+                for (int ch = 0; ch < 4; ch++) {
+                    // Count neighbors for this channel
+                    int ch_count = 0;
+                    for (int dy = -1; dy <= 1; dy++) {
+                        for (int dx = -1; dx <= 1; dx++) {
+                            if (dx == 0 && dy == 0) continue;
+                            int nx = (x + dx + width) % width;
+                            int ny = (y + dy + height) % height;
+                            unsigned char neighbor_val = 0;
+                            if (ch == 0) neighbor_val = current[ny * width + nx].ch1;
+                            else if (ch == 1) neighbor_val = current[ny * width + nx].ch2;
+                            else if (ch == 2) neighbor_val = current[ny * width + nx].ch3;
+                            else neighbor_val = current[ny * width + nx].ch4;
+                            ch_count += (neighbor_val > 64) ? 1 : 0;
+                        }
+                    }
+                    
+                    // Apply Conway rules per channel
+                    unsigned char cell_val = 0;
+                    if (ch == 0) cell_val = cell.ch1;
+                    else if (ch == 1) cell_val = cell.ch2;
+                    else if (ch == 2) cell_val = cell.ch3;
+                    else cell_val = cell.ch4;
+                    
+                    unsigned char new_val = 0;
+                    if (cell_val > 64) { // Alive
+                        if (ch_count == 2 || ch_count == 3) new_val = 255;
+                    } else { // Dead
+                        if (ch_count == 3) new_val = 255;
+                    }
+                    
+                    if (ch == 0) new_cell.ch1 = new_val;
+                    else if (ch == 1) new_cell.ch2 = new_val;
+                    else if (ch == 2) new_cell.ch3 = new_val;
+                    else new_cell.ch4 = new_val;
+                }
+            } else {
+                // Standard binary B/S rules
+                unsigned char birth = birth_table[rule_id * 9 + count];
+                unsigned char survive = survive_table[rule_id * 9 + count] & (cell.ch1 > 0);
+                unsigned char alive = birth | survive;
+                new_cell.ch1 = alive ? 255 : 0;
+            }
             
             
         } else if (rule_type == 1) { // MULTISTATE
@@ -199,6 +258,45 @@ void unified_step(const struct Cell* current, struct Cell* next,
                 } else {
                     new_cell.ch1 = 0;   // stay dead
                 }
+            }
+            
+        } else if (rule_type == 3) { // EXTENDED_CLASSIC
+            if (rule_id == 0) { // RGB_CONWAY
+                // Conway's Life on RGB channels independently (not alpha)
+                for (int ch = 0; ch < 3; ch++) { // Only RGB, not alpha
+                    // Count neighbors for this channel
+                    int ch_count = 0;
+                    for (int dy = -1; dy <= 1; dy++) {
+                        for (int dx = -1; dx <= 1; dx++) {
+                            if (dx == 0 && dy == 0) continue;
+                            int nx = (x + dx + width) % width;
+                            int ny = (y + dy + height) % height;
+                            unsigned char neighbor_val = 0;
+                            if (ch == 0) neighbor_val = current[ny * width + nx].ch1;
+                            else if (ch == 1) neighbor_val = current[ny * width + nx].ch2;
+                            else neighbor_val = current[ny * width + nx].ch3;
+                            ch_count += (neighbor_val > 64) ? 1 : 0;
+                        }
+                    }
+                    
+                    // Apply Conway rules per channel
+                    unsigned char cell_val = 0;
+                    if (ch == 0) cell_val = cell.ch1;
+                    else if (ch == 1) cell_val = cell.ch2;
+                    else cell_val = cell.ch3;
+                    
+                    unsigned char new_val = 0;
+                    if (cell_val > 64) { // Alive
+                        if (ch_count == 2 || ch_count == 3) new_val = 255;
+                    } else { // Dead
+                        if (ch_count == 3) new_val = 255;
+                    }
+                    
+                    if (ch == 0) new_cell.ch1 = new_val;
+                    else if (ch == 1) new_cell.ch2 = new_val;
+                    else new_cell.ch3 = new_val;
+                }
+                new_cell.ch4 = 255; // Alpha always full
             }
             
         } else if (rule_type == 2) { // MULTICHANNEL
@@ -509,7 +607,9 @@ def get_bs_tables():
         BinaryRule.DRYLIFE: ([3, 7], [2, 3]),
         BinaryRule.LIVE_FREE_DIE: ([2], [0]),
         BinaryRule.RULE_2X2: ([3, 6], [1, 2, 5]),
-        BinaryRule.LIFE_WITHOUT_DEATH: ([3], [0, 1, 2, 3, 4, 5, 6, 7, 8])
+        BinaryRule.LIFE_WITHOUT_DEATH: ([3], [0, 1, 2, 3, 4, 5, 6, 7, 8]),
+        BinaryRule.GRADUAL_CONWAY: ([3], [2, 3]),  # Uses Conway rules but gradual
+        BinaryRule.CLASSIC_CONWAY: ([3], [2, 3])   # Standard Conway B3/S23
     }
     
     birth_table = np.zeros((10, 9), dtype=np.uint8)
