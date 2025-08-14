@@ -4,9 +4,17 @@ import numpy as np
 from typing import Tuple, Optional
 import math
 import time
+import logging
 
 from .cuda_kernels import (RuleType, BinaryRule, MultiStateRule, MultiChannelRule, get_bs_tables, compile_kernels)
 from ..utils.config import Config
+
+# Global logger
+LOG = logging.getLogger(__name__)
+LOG.setLevel(logging.DEBUG)
+handler = logging.StreamHandler()
+handler.setFormatter(logging.Formatter('%(levelname)s: %(message)s'))
+LOG.addHandler(handler)
 
 
 class MultiChannelEngine:
@@ -27,14 +35,30 @@ class MultiChannelEngine:
         
         # Current rule settings
         self.rule_type = RuleType.BINARY_BS
-        self.rule_id = BinaryRule.CONWAY_LIFE
+        self.rule_id = BinaryRule.LIFE_WITHOUT_DEATH
         self.display_mode = 0  # 0=RGB, 1=Money as brightness
+        
+        print(f"Engine using rule_type={self.rule_type}, rule_id={self.rule_id}")
+        
+        # Debug field state
+        def debug_field_state(self, label):
+            field = self.get_field_cpu()
+            import numpy as np
+            total_nonzero = np.count_nonzero(field)
+            print(f"DEBUG {label}: field shape={field.shape}, nonzero={total_nonzero}, min={field.min()}, max={field.max()}")
+            center_y, center_x = field.shape[0]//2, field.shape[1]//2
+            sample = field[center_y-2:center_y+3, center_x-2:center_x+3, 0]
+            print(f"DEBUG {label}: center sample=\n{sample}")
+        
+        self.debug_field_state = debug_field_state.__get__(self, type(self))
         
         # Compile advanced unified CUDA kernels
         self.kernels = compile_kernels()
         
         # Initialize lookup tables for binary rules
         birth_table, survive_table = get_bs_tables()
+        print(f"DEBUG: Conway rule 0 - birth: {birth_table[0]}, survive: {survive_table[0]}")
+        
         birth_ptr = self.kernels['unified_module'].get_global('birth_table')
         survive_ptr = self.kernels['unified_module'].get_global('survive_table')
         
@@ -112,6 +136,14 @@ class MultiChannelEngine:
             # Swap buffers
             self.current_buffer = 1 - self.current_buffer
             self.generation += 1
+            
+            # Log field statistics
+            field = self.buffers[self.current_buffer]
+            active_cells = cp.count_nonzero(field)
+            field_min = cp.min(field)
+            field_max = cp.max(field)
+            LOG.info(f"Step {self.generation}: active_cells={active_cells}, min={field_min}, max={field_max}")
+            
     
     def reset(self) -> None:
         """Reset the field to empty state."""
@@ -131,22 +163,13 @@ class MultiChannelEngine:
             radius: Circle radius in cells
             value: 4-channel values (ch1, ch2, ch3, ch4)
         """
+        print(f"DEBUG: draw_circle called with x={x}, y={y}, radius={radius}, value={value}")
+        
         if not (0 <= x < self.width and 0 <= y < self.height):
+            print(f"DEBUG: coordinates out of bounds! width={self.width}, height={self.height}")
             return
             
-        # Calculate number of threads needed (bounding box area)
-        min_x = max(0, x - radius)
-        max_x = min(self.width - 1, x + radius)
-        min_y = max(0, y - radius)
-        max_y = min(self.height - 1, y + radius)
-        
-        total_pixels = (max_x - min_x + 1) * (max_y - min_y + 1)
-        if total_pixels <= 0:
-            return
-            
-        blocks = self._calculate_grid_size(total_pixels)
-        
-        # Call simplified draw circle kernel with individual values
+        # Use simple grid for full field
         total_cells = self.width * self.height
         blocks = self._calculate_grid_size(total_cells)
         
@@ -328,7 +351,7 @@ class MultiChannelEngine:
         current = self.buffers[self.current_buffer]
         
         if self.display_mode == 0:  # RGB display - direct RGBA passthrough
-            return current
+                return current
                 
         elif self.display_mode == 1:  # Money as brightness
             avg = (current[:, :, 0] + current[:, :, 1] + current[:, :, 2]) // 3

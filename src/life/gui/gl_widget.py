@@ -101,6 +101,7 @@ class LifeGLWidget(QOpenGLWidget):
         rgba_gpu = self.engine.get_rgba_array()
         rgba_cpu = cp.asnumpy(rgba_gpu)
         
+        
         # Update texture
         glBindTexture(GL_TEXTURE_2D, self.texture_id)
         glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 

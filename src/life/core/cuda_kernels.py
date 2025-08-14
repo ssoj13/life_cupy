@@ -169,10 +169,17 @@ void unified_step(const struct Cell* current, struct Cell* next,
                 }
             }
             
-            // Apply binary B/S rule
-            unsigned char alive = birth_table[rule_id * 9 + count] | 
-                                (survive_table[rule_id * 9 + count] & (cell.ch1 > 0));
+            // Apply binary B/S rule - DEBUG VERSION
+            unsigned char birth = birth_table[rule_id * 9 + count];
+            unsigned char survive = survive_table[rule_id * 9 + count] & (cell.ch1 > 0);
+            unsigned char alive = birth | survive;
             new_cell.ch1 = alive ? 255 : 0;
+            
+            // Basic debug for center area only
+            if (i < 50 && (birth || survive || cell.ch1 > 0)) {
+                printf("CUDA cell %d: ch1=%d->%d, neighbors=%d\n", 
+                       i, cell.ch1, new_cell.ch1, count);
+            }
             
         } else if (rule_type == 1) { // MULTISTATE
             if (rule_id == 0) { // Brian's Brain
@@ -422,7 +429,7 @@ def get_bs_tables():
     
     # Define B/S rules: (birth_neighbors, survive_neighbors)
     rules = {
-        BinaryRule.CONWAY_LIFE: ([3], [2, 3]),
+        BinaryRule.CONWAY_LIFE: ([3], [0, 1, 2, 3, 4, 5, 6, 7, 8]),
         BinaryRule.HIGHLIFE: ([3, 6], [2, 3]),
         BinaryRule.SEEDS: ([2], []),
         BinaryRule.DAY_NIGHT: ([3, 6, 7, 8], [3, 4, 6, 7, 8]),
