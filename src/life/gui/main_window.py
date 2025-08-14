@@ -8,6 +8,14 @@ from PySide6.QtCore import Qt, QTimer, QSettings
 from PySide6.QtGui import QAction, QKeySequence, QColor, QPixmap, QImage
 from pathlib import Path
 import numpy as np
+import logging
+
+# Set up global logger
+LOG = logging.getLogger(__name__)
+LOG.setLevel(logging.DEBUG)
+handler = logging.StreamHandler()
+handler.setFormatter(logging.Formatter('%(levelname)s: %(message)s'))
+LOG.addHandler(handler)
 
 from .gl_widget import LifeGLWidget
 from ..utils.config import Config
@@ -274,8 +282,9 @@ class MainWindow(QMainWindow):
         inst_layout.addWidget(QLabel("• Middle Drag: Pan"))
         inst_layout.addWidget(QLabel("• Scroll: Zoom"))
         inst_layout.addWidget(QLabel("• Space/↑: Play/Pause"))
-        inst_layout.addWidget(QLabel("• R/←/Ctrl+R: Reset"))
-        inst_layout.addWidget(QLabel("• S: Single Step"))
+        inst_layout.addWidget(QLabel("• R/←: Reset"))
+        inst_layout.addWidget(QLabel("• S/→: Single Step"))
+        inst_layout.addWidget(QLabel("• C/Ctrl+R: Clear Field"))
         inst_layout.addWidget(QLabel("• H/Home: Reset Viewport"))
         inst_layout.addWidget(QLabel("• [/]: Brush Size ±10%"))
         inst_layout.addWidget(QLabel("• ESC: Exit Application"))
@@ -295,16 +304,19 @@ class MainWindow(QMainWindow):
         
     def create_menu_bar(self):
         """Create menu bar with File and Video options."""
+        LOG.debug("Creating menu bar")
         menubar = self.menuBar()
         
         # File menu
         file_menu = menubar.addMenu('&File')
         
         # Open image
+        LOG.debug("Creating open action")
         open_action = QAction('&Open Image...', self)
         open_action.setShortcut(QKeySequence.Open)
         open_action.triggered.connect(self.open_image)
         file_menu.addAction(open_action)
+        LOG.debug("Open action added to menu")
         
         # Save image
         save_action = QAction('&Save Image...', self)
@@ -386,12 +398,6 @@ class MainWindow(QMainWindow):
         reset_action.triggered.connect(self.reset_simulation)
         self.addAction(reset_action)
         
-        # Ctrl+R for reset
-        ctrl_reset_action = QAction(self)
-        ctrl_reset_action.setShortcut(QKeySequence("Ctrl+R"))
-        ctrl_reset_action.triggered.connect(self.reset_simulation)
-        self.addAction(ctrl_reset_action)
-        
         # Arrow Up for play
         up_play_action = QAction(self)
         up_play_action.setShortcut(QKeySequence(Qt.Key_Up))
@@ -403,6 +409,12 @@ class MainWindow(QMainWindow):
         left_reset_action.setShortcut(QKeySequence(Qt.Key_Left))
         left_reset_action.triggered.connect(self.reset_simulation)
         self.addAction(left_reset_action)
+        
+        # Arrow Right for step forward
+        right_step_action = QAction(self)
+        right_step_action.setShortcut(QKeySequence(Qt.Key_Right))
+        right_step_action.triggered.connect(self.step_simulation)
+        self.addAction(right_step_action)
         
         # S for step
         step_action = QAction(self)
@@ -421,6 +433,12 @@ class MainWindow(QMainWindow):
         clear_action.setShortcut(QKeySequence(Qt.Key_C))
         clear_action.triggered.connect(self.clear_field)
         self.addAction(clear_action)
+        
+        # Ctrl+R for clear
+        ctrl_clear_action = QAction(self)
+        ctrl_clear_action.setShortcut(QKeySequence("Ctrl+R"))
+        ctrl_clear_action.triggered.connect(self.clear_field)
+        self.addAction(ctrl_clear_action)
         
         # H for home (reset viewport)
         home_action = QAction(self)
@@ -472,15 +490,21 @@ class MainWindow(QMainWindow):
         """Perform single simulation step."""
         # Debug: Check field before step
         field_before = self.gl_widget.engine.get_field_cpu()
-        alive_before = np.count_nonzero(field_before > 128)
+        alive_before = np.count_nonzero(field_before > 64)
         
         self.gl_widget.engine.step()
         
         # Debug: Check field after step
         field_after = self.gl_widget.engine.get_field_cpu()
-        alive_after = np.count_nonzero(field_after > 128)
+        alive_after = np.count_nonzero(field_after > 64)
         
-        print(f"Step {self.gl_widget.engine.generation}: Alive cells before: {alive_before}, after: {alive_after}")
+        LOG.info(f"STEP {self.gl_widget.engine.generation}: Alive cells before: {alive_before}, after: {alive_after}")
+        
+        # Debug: Check actual values in the field
+        sample_values = field_after[field_after.shape[0]//2:field_after.shape[0]//2+5, 
+                                   field_after.shape[1]//2:field_after.shape[1]//2+5]
+        LOG.debug(f"Sample values after step: min={sample_values.min()}, max={sample_values.max()}")
+        LOG.debug(f"Sample area (red channel):\n{sample_values[:,:,0]}")
         
         self.gl_widget.update()
         self.update_generation_display(self.gl_widget.engine.generation)
@@ -603,7 +627,7 @@ class MainWindow(QMainWindow):
         self.rule_combobox.clear()
         
         # Add binary rules
-        self.rule_combobox.addItem("Conway's Life (B3456/S234567)", (RuleType.BINARY_BS, BinaryRule.CONWAY_LIFE))
+        self.rule_combobox.addItem("Conway's Life (B234/S3456)", (RuleType.BINARY_BS, BinaryRule.CONWAY_LIFE))
         self.rule_combobox.addItem("HighLife (B36/S23)", (RuleType.BINARY_BS, BinaryRule.HIGHLIFE))
         self.rule_combobox.addItem("Seeds (B2/S)", (RuleType.BINARY_BS, BinaryRule.SEEDS))
         self.rule_combobox.addItem("Day & Night (B3678/S34678)", (RuleType.BINARY_BS, BinaryRule.DAY_NIGHT))
@@ -706,8 +730,78 @@ class MainWindow(QMainWindow):
         self.color_button.setStyleSheet(f"QPushButton {{ background-color: rgb({r}, {g}, {b}); border: 1px solid black; }}")
         self.color_button.setToolTip(f"Paint Color: RGB({r}, {g}, {b})")
     
+    def _load_image_file(self, file_path: str) -> bool:
+        """Load an image file into the field. Returns True if successful."""
+        try:
+            LOG.debug("Loading image file")
+            # Load image with Qt
+            qimg = QImage(file_path)
+            
+            if qimg.isNull():
+                raise ValueError("Failed to load image file")
+            
+            LOG.info(f"QImage loaded successfully: {not qimg.isNull()}")
+            
+            # Convert to RGBA if needed
+            if qimg.format() != QImage.Format_RGBA8888:
+                qimg = qimg.convertToFormat(QImage.Format_RGBA8888)
+            
+            # Get current field dimensions
+            field_width = self.gl_widget.engine.width
+            field_height = self.gl_widget.engine.height
+            
+            # Scale image to fit field
+            qimg = qimg.scaled(field_width, field_height, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
+            
+            # Convert QImage to numpy array
+            # QImage data is in RGBA format
+            ptr = qimg.constBits()
+            img_array = np.array(ptr).reshape(field_height, field_width, 4)  # Shape: (height, width, 4)
+            
+            # Debug: Check what values we're getting
+            LOG.info(f"BEFORE SET_FIELD - Image array shape: {img_array.shape}")
+            LOG.info(f"BEFORE SET_FIELD - Image array dtype: {img_array.dtype}")
+            LOG.info(f"BEFORE SET_FIELD - Min/Max values: {img_array.min()}/{img_array.max()}")
+            LOG.info(f"BEFORE SET_FIELD - Non-zero count: {np.count_nonzero(img_array)}")
+            LOG.info(f"BEFORE SET_FIELD - Sample values at center: {img_array[field_height//2, field_width//2]}")
+            
+            self.gl_widget.engine.set_field(img_array)
+            
+            # Debug: Check what the engine actually stored
+            stored_field = self.gl_widget.engine.get_field_cpu()
+            LOG.info(f"AFTER SET_FIELD - shape: {stored_field.shape}")
+            LOG.info(f"AFTER SET_FIELD - dtype: {stored_field.dtype}")
+            LOG.info(f"AFTER SET_FIELD - min/max: {stored_field.min()}/{stored_field.max()}")
+            LOG.info(f"AFTER SET_FIELD - sample: {stored_field[field_height//2, field_width//2]}")
+            
+            # Now test one simulation step to see what happens
+            LOG.info("TESTING ONE STEP...")
+            self.gl_widget.engine.step()
+            after_step = self.gl_widget.engine.get_field_cpu()
+            LOG.info(f"AFTER ONE STEP - min/max: {after_step.min()}/{after_step.max()}")
+            LOG.info(f"AFTER ONE STEP - non-zero count: {np.count_nonzero(after_step)}")
+            LOG.info(f"AFTER ONE STEP - sample: {after_step[field_height//2, field_width//2]}")
+            
+            # Reset to before step
+            self.gl_widget.engine.set_field(img_array)
+            self.gl_widget.engine.generation = 0
+            self.gl_widget.update()
+            
+            # Store the loaded image as the reset field
+            self.stored_field = img_array.copy()
+            self.gl_widget.engine.generation = 0  # Reset generation counter
+            self.update_generation_display(0)
+            
+            return True
+            
+        except Exception as e:
+            LOG.error(f"Failed to load image {Path(file_path).name}: {str(e)}")
+            QMessageBox.critical(self, "Error Loading Image", f"Failed to load image:\\n{str(e)}")
+            return False
+    
     def open_image(self):
         """Open PNG/JPEG image and load into field."""
+        LOG.info("Open image dialog called")
         file_path, _ = QFileDialog.getOpenFileName(
             self, 
             "Open Image", 
@@ -715,54 +809,14 @@ class MainWindow(QMainWindow):
             "Image Files (*.png *.jpg *.jpeg);;PNG Files (*.png);;JPEG Files (*.jpg *.jpeg)"
         )
         
+        LOG.info(f"Selected file: {file_path}")
         if file_path:
-            try:
-                # Load image with Qt
-                qimg = QImage(file_path)
-                
-                if qimg.isNull():
-                    raise ValueError("Failed to load image file")
-                
-                # Convert to RGBA if needed
-                if qimg.format() != QImage.Format_RGBA8888:
-                    qimg = qimg.convertToFormat(QImage.Format_RGBA8888)
-                
-                # Get current field dimensions
-                field_width = self.gl_widget.engine.width
-                field_height = self.gl_widget.engine.height
-                
-                # Scale image to fit field
-                qimg = qimg.scaled(field_width, field_height, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
-                
-                # Convert QImage to numpy array
-                # QImage data is in RGBA format
-                ptr = qimg.constBits()
-                img_array = np.array(ptr).reshape(field_height, field_width, 4)  # Shape: (height, width, 4)
-                
-                # Debug: Check what values we're getting
-                print(f"Image array shape: {img_array.shape}")
-                print(f"Image array dtype: {img_array.dtype}")
-                print(f"Min/Max values: {img_array.min()}/{img_array.max()}")
-                print(f"Non-zero count: {np.count_nonzero(img_array)}")
-                print(f"Sample values at center: {img_array[field_height//2, field_width//2]}")
-                
-                self.gl_widget.engine.set_field(img_array)
-                self.gl_widget.update()
-                
-                # Store the loaded image as the reset field
-                self.stored_field = img_array.copy()
-                self.gl_widget.engine.generation = 0  # Reset generation counter
-                self.update_generation_display(0)
-                
-                self.status_bar.showMessage(f"Loaded image: {Path(file_path).name} (resized to {field_width}×{field_height}) - Stored for reset", 3000)
-                
+            if self._load_image_file(file_path):
                 # Add to recent files and save last folder
                 self.add_recent_file(file_path)
                 self.last_folder = str(Path(file_path).parent)
                 self.settings.setValue('last_folder', self.last_folder)
-                
-            except Exception as e:
-                QMessageBox.critical(self, "Error Loading Image", f"Failed to load image:\\n{str(e)}")
+                self.status_bar.showMessage(f"Loaded image: {Path(file_path).name} - Stored for reset", 3000)
     
     def save_image(self):
         """Save current field as PNG/JPEG image."""
@@ -879,40 +933,13 @@ class MainWindow(QMainWindow):
     
     def load_recent_file(self, file_path: str):
         """Load a recent file."""
+        LOG.info(f"Loading recent file: {file_path}")
         if Path(file_path).exists():
-            try:
-                # Use same logic as open_image but with known path
-                qimg = QImage(file_path)
-                
-                if qimg.isNull():
-                    raise ValueError("Failed to load image file")
-                
-                if qimg.format() != QImage.Format_RGBA8888:
-                    qimg = qimg.convertToFormat(QImage.Format_RGBA8888)
-                
-                field_width = self.gl_widget.engine.width
-                field_height = self.gl_widget.engine.height
-                
-                qimg = qimg.scaled(field_width, field_height, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
-                
-                ptr = qimg.constBits()
-                img_array = np.array(ptr).reshape(field_height, field_width, 4)
-                
-                self.gl_widget.engine.set_field(img_array)
-                self.gl_widget.update()
-                
-                # Store the loaded image as the reset field
-                self.stored_field = img_array.copy()
-                self.gl_widget.engine.generation = 0  # Reset generation counter
-                self.update_generation_display(0)
-                
+            if self._load_image_file(file_path):
                 self.status_bar.showMessage(f"Loaded recent: {Path(file_path).name} - Stored for reset", 3000)
-                
                 # Move to top of recent list
                 self.add_recent_file(file_path)
-                
-            except Exception as e:
-                QMessageBox.critical(self, "Error Loading Recent File", f"Failed to load {Path(file_path).name}:\\n{str(e)}")
+            else:
                 # Remove invalid file from recent list
                 if file_path in self.recent_files:
                     self.recent_files.remove(file_path)

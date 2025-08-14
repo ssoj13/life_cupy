@@ -243,18 +243,18 @@ void simple_unified_step(unsigned char* current, unsigned char* next,
                     int nx = (x + dx + width) % width;
                     int ny = (y + dy + height) % height;
                     int neighbor_idx = (ny * width + nx) * 4;
-                    if (current[neighbor_idx + channel] > 128) count++; // Only this channel
+                    if (current[neighbor_idx + channel] > 64) count++; // Lower threshold for images
                 }
             }
             
             // Current cell alive state for this channel
-            bool alive = current[cell_idx + channel] > 128;
+            bool alive = current[cell_idx + channel] > 64;
             bool next_alive = false;
             
             switch(rule_id) {
-                case 0: // Conway's Life B3456/S234567 (More survivable)
-                    next_alive = (!alive && (count == 3 || count == 4 || count == 5 || count == 6)) ||
-                                (alive && (count == 2 || count == 3 || count == 4 || count == 5 || count == 6 || count == 7));
+                case 0: // Conway's Life B234/S3456 (Balanced image-friendly)
+                    next_alive = (!alive && (count >= 2 && count <= 4)) || 
+                                (alive && (count >= 3 && count <= 6));
                     break;
                 case 1: // HighLife B36/S23
                     next_alive = (count == 3 || count == 6) || (count == 2 && alive);
