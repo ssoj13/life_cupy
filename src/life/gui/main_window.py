@@ -627,7 +627,7 @@ class MainWindow(QMainWindow):
         self.rule_combobox.clear()
         
         # Add binary rules
-        self.rule_combobox.addItem("Conway's Life (B234/S3456)", (RuleType.BINARY_BS, BinaryRule.CONWAY_LIFE))
+        self.rule_combobox.addItem("Conway's Life (B3/S2345678)", (RuleType.BINARY_BS, BinaryRule.CONWAY_LIFE))
         self.rule_combobox.addItem("HighLife (B36/S23)", (RuleType.BINARY_BS, BinaryRule.HIGHLIFE))
         self.rule_combobox.addItem("Seeds (B2/S)", (RuleType.BINARY_BS, BinaryRule.SEEDS))
         self.rule_combobox.addItem("Day & Night (B3678/S34678)", (RuleType.BINARY_BS, BinaryRule.DAY_NIGHT))
@@ -637,7 +637,7 @@ class MainWindow(QMainWindow):
         self.rule_combobox.addItem("Live Free or Die (B2/S0)", (RuleType.BINARY_BS, BinaryRule.LIVE_FREE_DIE))
         self.rule_combobox.addItem("2x2 (B36/S125)", (RuleType.BINARY_BS, BinaryRule.RULE_2X2))
         self.rule_combobox.addItem("Life Without Death (B3/S012345678)", (RuleType.BINARY_BS, BinaryRule.LIFE_WITHOUT_DEATH))
-        self.rule_combobox.addItem("Gradual Conway (Smooth Growth/Decay)", (RuleType.BINARY_BS, BinaryRule.GRADUAL_CONWAY))
+        self.rule_combobox.addItem("Gradual Conway (B3/S2345678 Smooth)", (RuleType.BINARY_BS, BinaryRule.GRADUAL_CONWAY))
         self.rule_combobox.addItem("Classic Conway (B3/S23)", (RuleType.BINARY_BS, BinaryRule.CLASSIC_CONWAY))
         
         # Add multistate rules

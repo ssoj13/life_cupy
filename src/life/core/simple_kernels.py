@@ -252,9 +252,12 @@ void simple_unified_step(unsigned char* current, unsigned char* next,
             bool next_alive = false;
             
             switch(rule_id) {
-                case 0: // Conway's Life B234/S3456 (Balanced image-friendly)
-                    next_alive = (!alive && (count >= 2 && count <= 4)) || 
-                                (alive && (count >= 3 && count <= 6));
+                case 0: // Conway's Life B3/S234567 (Balanced)
+                    next_alive = (!alive && count == 3) || 
+                                (alive && (count >= 2 && count <= 7));
+                    break;
+                case 10: // Gradual Conway B3/S234567 (same rules, gradual changes)
+                    // Special handling below
                     break;
                 case 1: // HighLife B36/S23
                     next_alive = (count == 3 || count == 6) || (count == 2 && alive);
@@ -287,9 +290,6 @@ void simple_unified_step(unsigned char* current, unsigned char* next,
                 case 9: // Life Without Death B3/S012345678
                     next_alive = (!alive && count == 3) || alive;
                     break;
-                case 10: // Gradual Conway - cells gradually grow/shrink instead of binary alive/dead
-                    // Special handling for gradual Conway below
-                    break;
                 case 11: // Classic Conway B3/S23 (Original)
                     next_alive = (count == 3) || (count == 2 && alive);
                     break;
@@ -298,18 +298,24 @@ void simple_unified_step(unsigned char* current, unsigned char* next,
             }
             
             // Apply result to this specific channel
-            if (rule_id == 10) { // Gradual Conway
+            if (rule_id == 10) { // Gradual Conway B3/S234567
                 int current_val = current[cell_idx + channel];
                 int new_val = current_val;
                 
-                if (count == 3) {
-                    // Birth/Growth condition - gain 10%
-                    new_val = current_val + (current_val * 10) / 100;
-                } else if (count == 2 && current_val > 128) {
-                    // Survival condition - stay the same
-                    new_val = current_val;
+                if (!alive && count == 3) {
+                    // Birth condition - only on exactly 3 neighbors
+                    new_val = min(255, current_val + 25); // Birth gives boost
+                } else if (alive && (count >= 2 && count <= 7)) {
+                    // Survival condition B3/S234567
+                    if (count >= 3 && count <= 5) {
+                        // Optimal survival range - slight growth
+                        new_val = min(255, current_val + 2);
+                    } else {
+                        // Edge of survival - maintain
+                        new_val = current_val;
+                    }
                 } else if (current_val > 0) {
-                    // Death/Decay condition - lose 10%
+                    // Death/Decay condition - gradual 10% fade
                     new_val = current_val - (current_val * 10) / 100;
                 }
                 
